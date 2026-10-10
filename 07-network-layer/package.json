@@ -1,0 +1,25 @@
+﻿{
+  "name": "computetorrent-swarm-service",
+  "version": "1.0.0",
+  "description": "Per-task private WebTorrent swarms",
+  "main": "swarm_service.js",
+  "type": "module",
+  "scripts": {
+    "start": "node swarm_service.js",
+    "test": "node test_swarm.js"
+  },
+  "dependencies": {
+    "@chainsafe/libp2p-yamux": "8.0.1",
+    "@libp2p/bootstrap": "12.0.33",
+    "@libp2p/circuit-relay-v2": "4.2.14",
+    "@libp2p/identify": "4.1.15",
+    "@libp2p/kad-dht": "16.4.6",
+    "@libp2p/mdns": "12.0.33",
+    "@libp2p/noise": "17.0.4",
+    "@libp2p/tcp": "11.0.29",
+    "webtorrent": "^2.0.0",
+    "express": "^4.18.0",
+    "libp2p": "3.3.12",
+    "@multiformats/multiaddr": "13.0.3"
+  }
+}
