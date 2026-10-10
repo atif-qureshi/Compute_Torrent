@@ -1,11 +1,13 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import Head from 'next/head'
+import { useRouter } from 'next/router'
 import styles from '../styles/Home.module.css'
 import PortalNav from '../components/PortalNav'
 
 const API = '/api/ct'
 
 export default function History() {
+  const router = useRouter()
   const [tasks, setTasks] = useState<any[]>([])
   const [selected, setSelected] = useState<any>(null)
   const [error, setError] = useState('')
@@ -29,20 +31,36 @@ export default function History() {
     }, 3000)
     return () => clearInterval(timer)
   }, [selected?.task_id, selected?.status])
-  const openTask = async (id) => {
+  const loadTask = useCallback(async (id: string) => {
     try {
       const response = await fetch(`${API}/tasks/${encodeURIComponent(id)}`)
-      if (!response.ok) throw new Error('Could not load task details')
+      if (!response.ok) {
+        let message = 'Could not load task details'
+        try { message = (await response.json()).detail || message } catch { /* Keep the readable fallback. */ }
+        throw new Error(message)
+      }
       setSelected(await response.json())
-    } catch (reason) { setError(reason.message) }
+      setError('')
+    } catch (reason: any) { setError(reason.message || 'Could not load task details') }
+  }, [])
+  const openTask = (id: string) => {
+    void router.push({ pathname: '/history', query: { task_id: id } }, undefined, { shallow: true })
+    void loadTask(id)
   }
+  useEffect(() => {
+    const id = router.query.task_id
+    if (router.isReady && typeof id === 'string' && id !== selected?.task_id) void loadTask(id)
+  }, [router.isReady, router.query.task_id, selected?.task_id, loadTask])
   const downloadResult = () => {
     const blob = new Blob([JSON.stringify(selected.result, null, 2)], { type: 'application/json' })
     const link = document.createElement('a')
-    link.href = URL.createObjectURL(blob)
+    const url = URL.createObjectURL(blob)
+    link.href = url
     link.download = `${selected.task_id}-result.json`
+    document.body.appendChild(link)
     link.click()
-    URL.revokeObjectURL(link.href)
+    link.remove()
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000)
   }
   const visibleTasks = filter === 'all' ? tasks : tasks.filter((task) => task.status === filter)
   return <div className={styles.container}><Head><title>Task history | ComputeTorrent</title></Head><main className={styles.main}>
@@ -57,9 +75,10 @@ export default function History() {
     {selected && <section className={styles.card}><div className={styles.sectionHeading}><div><div className={styles.eyebrow}>TASK DETAIL</div><h2>{selected.task_id}</h2></div><span className={`${styles.statusPill} ${styles[`status_${selected.status}`] || ''}`}>{selected.status}</span></div>
       <div className={styles.progressTrack}><span style={{ width: `${selected.progress?.total ? (selected.progress.completed / selected.progress.total) * 100 : 0}%` }} /></div>
       <p className={styles.muted}>{selected.progress?.completed || 0} of {selected.progress?.total || 0} chunks verified · {selected.mode || 'WS-RR'} scheduler · {selected.model_name}</p>
-      {!!selected.chunks?.length && <div className={styles.chunkList}>{selected.chunks.map((chunk) => <div className={styles.chunkRow} key={chunk.chunk_id}><span>{chunk.index + 1}</span><strong>{chunk.chunk_id}</strong><span>{chunk.status}</span><small>{chunk.verification?.method || (chunk.status === 'verified' ? 'Replica agreement' : 'Waiting for provider')}{chunk.verification?.canary?.passed ? ` · Hidden canary passed (${chunk.verification.canary.id})` : ''}</small>{chunk.verification?.verillm_audit && <details className={styles.auditEvidence}><summary>Transcript root {chunk.verification.verillm_audit.commitment_root.slice(0, 18)}…</summary><pre className={styles.result}>{JSON.stringify(chunk.verification.verillm_audit, null, 2)}</pre></details>}</div>)}</div>}
+      {!!selected.chunks?.length && <div className={styles.chunkList}>{selected.chunks.map((chunk) => <div className={styles.chunkRow} key={chunk.chunk_id}><span>{chunk.index + 1}</span><strong>{chunk.chunk_id}</strong><span>{chunk.status}</span><small>{chunk.verification?.method || (chunk.status === 'verified' ? 'Replica agreement' : 'Waiting for provider')}{chunk.verification?.canary?.passed ? ` · Known-answer check passed (${chunk.verification.canary.id})` : ''}</small>{chunk.failure_reason && <small className={styles.chunkFailure}>Failure: {chunk.failure_reason}</small>}{chunk.verification?.verillm_audit && <details className={styles.auditEvidence}><summary>Output transcript root {chunk.verification.verillm_audit.commitment_root.slice(0, 18)}…</summary><pre className={styles.result}>{JSON.stringify(chunk.verification.verillm_audit, null, 2)}</pre></details>}</div>)}</div>}
       {selected.result?.text && <><h3>Verified result</h3><pre className={styles.result}>{selected.result.text}</pre><button type="button" className={styles.buttonSecondary} onClick={downloadResult}>Download JSON result</button></>}
       {selected.result?.error && <p className={styles.error}>{selected.result.error}</p>}
+      <button type="button" className={styles.buttonSecondary} onClick={() => { setSelected(null); void router.replace('/history', undefined, { shallow: true }) }}>Close task details</button>
     </section>}
   </main></div>
 }

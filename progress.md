@@ -2,6 +2,8 @@
 
 **Last Updated:** 2026-10-10 19:39
 
+> Historical checklist from the initial build plan. Its phase percentages and unchecked items are not a live source-status report; use [docs/IMPLEMENTATION-STATUS.md](docs/IMPLEMENTATION-STATUS.md) for the current implemented-versus-future boundary.
+
 ## Overview
 
 This document tracks development progress across all 11 build phases and 7 milestones of the ComputeTorrent MVP.

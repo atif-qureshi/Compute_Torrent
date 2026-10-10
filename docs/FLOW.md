@@ -1,97 +1,39 @@
-# End-to-End Flow (requirements document concept, one builder)
+# ComputeTorrent architecture and end-to-end flow
 
-This flow follows the **Seeder/Leecher requirements document** (`docs/source/requirements-seeder-and-portal.md`), the Project Concept, and the research proposal. One developer builds every part, so the "black boxes" of the requirements document (coordination server, slicer, verification) are real modules here.
+ComputeTorrent is a local-first volunteer-computing MVP. One coordinator manages task state and provider assignment; multiple provider PCs can join from a trusted LAN. This is independent prompt inference, not distributed training or model-parallel inference.
 
-| Torrent idea | ComputeTorrent meaning |
-|---|---|
-| Leecher | **Requestor**: submits a heavy task through the web portal |
-| Seeder | **Provider**: donor PC running the desktop app |
-| Swarm | **Per-task private WebTorrent swarm** (that task's requestor side + its assigned seeders only) |
-| File pieces | **Chunks** made by task decomposition |
-| Finished download | **Reassembled final result** |
+## Current planes
 
-## 0. Planes (what is central and what is not)
-
-| Plane | Carried by | Central? |
+| Plane | Current implementation | Centralized? |
 |---|---|---|
-| Control: register, heartbeat, assign, status, result | WebSocket between the seeder app and the **Coordination Server (Tracker/Relay)** | Yes, control only |
-| Data: dataset, model and prompt chunks | Per-task private WebTorrent swarm, SHA-1 piece hashing | No |
-| Direct upgrade | STUN handshake, WebRTC when possible; otherwise silently stay on the relay | No |
-| Logic on the server: decomposition, allocation, verification, reassembly, credits | Coordination Server modules 04, 05, 06, 09 | Yes |
-| Records and dashboard | PostgreSQL + Socket.io feed to the portal | Yes |
+| Portal/API | Next.js portal calls the FastAPI coordinator through a server-side authenticated proxy. | Yes |
+| Control | HTTP API and provider WebSocket carry enrollment, heartbeat, task assignments, status, and inline results. | Yes |
+| File data | Private WebTorrent swarms transfer prompt payloads and GGUF model/adapter files. WebRTC peer signalling uses configured tracker endpoints; providers validate SHA-256 manifests. | Swarm-based, but current discovery depends on tracker signalling. |
+| LAN discovery overlay | A separate libp2p Kademlia/Circuit Relay peer network provides LAN peer connectivity information. It does not transport task files. | Coordinator bootstraps it. |
+| Execution | Provider launches llama.cpp inside a disposable network-disabled Docker container. | Provider-local |
+| Verification | Strict replica-output majority when replicas are available; optional separate known-answer canary task; limited Merkle output-transcript receipt. | Coordinator-managed |
+| Results and credits | Coordinator stores task history/results and demo credit ledger entries. | Yes |
 
-Wording for the defense about "trackerless": there is **no BitTorrent tracker for data**; swarms are private per task and torn down afterwards. A coordination server exists for **control messages only**. State this openly; the research proposal's "trackerless peer discovery" refers to the data plane.
+## Happy path
 
-## A. Happy path (Sara = seeder with RTX 3060, Ali = requestor with 500 prompts)
+1. The operator starts the local Compose stack and registers a licensed, operator-supplied GGUF model.
+2. The requestor signs into the local portal, selects the model/scheduler/resource filters, and submits one prompt or a batch of independent prompts.
+3. The coordinator validates and slices the prompts into ordered one-prompt chunks, applies the current provider limit/requirements, records the one-credit demo task charge, and waits for eligible providers if none are connected.
+4. The coordinator creates private WebTorrent swarms for task payloads. Registered model files are served through their model swarm.
+5. Each idle eligible provider receives one assignment over WebSocket, downloads the model/chunk over WebTorrent, verifies hashes, and runs inference in its sandbox.
+6. Providers send status and output over WebSocket. The coordinator validates output hashes, collects configured replicas, and accepts only a strict majority when multiple replicas are required.
+7. If the operator enabled known-answer probes, a separate internal canary task may be queued. Its expected-output hash is checked coordinator-side; this MVP check is exact-output and runtime-sensitive.
+8. The coordinator stores a limited Merkle commitment to replica reports, reassembles verified prompt outputs in order, awards demo provider credits, and tears down task swarms.
+9. The portal shows task/chunk status, verification detail, downloadable results, and the demo credit ledger. System canary tasks are hidden from requestor history.
 
-```
- ALI (Requestor, web portal)            COORDINATION SERVER                  SARA (Seeder app)
- -------------------------------        ------------------------------       ----------------------------------
-                                                                            0. Launch: profile hardware, tier,
-                                                                               WebSocket register, heartbeat
- 1. Submit task (data, kind) --------->
-                                        2. Analyse difficulty, slice into
-                                           chunks (+hidden canaries),
-                                           create per-task swarm, seed it
-                                        3. Match chunks to online seeders
-                                           by tier, capacity, availability
-                                           ----- task_assign (chunks 7, 14) --->
-                                                                            4. status: queued -> downloading,
-                                                                               join swarm, download, verify hashes
-                                                                            5. status: running, fresh Docker
-                                                                               container, run 40 prompts
- <-------- live progress (Socket.io) <-------------- status_update ---------
-                                                                            6. result_submit, status: completed,
-                                                                               leave swarm, destroy container
-                                        <------------- result_submit -------
-                                        7. Verify (canary, replicas, audit)
-                                        8. Reassemble all chunks in order
-                                        9. Credits to seeders
- 10. Result view and download <---------
-                                        ----- verdict_notice (credits) ---->
-                                                                            11. Update local stats, credits;
-                                                                                back to idle
-```
+## Multi-PC local setup
 
-## B. Step-by-step detail
+Use the coordinator's private LAN IPv4 address in provider apps on other PCs, for example `ws://192.168.1.5:8001/ws/seeder`; `127.0.0.1` only points back to the same PC. Share the enrollment code only with intended volunteers. Bind required ports only on the trusted LAN and do not configure router port forwarding or a public domain for this development environment. Full steps are in [IMPLEMENTATION-SETUP.md](../IMPLEMENTATION-SETUP.md).
 
-| Step | Actor | Action | State |
-|---|---|---|---|
-| 0 | Seeder app | Hardware Profiling builds `{GPU, VRAM, CUDA, RAM}`, assigns Tier-1 (VRAM 8 GB or more) or Tier-2; Networking Client registers over WebSocket; heartbeat starts | Seeder = ONLINE/IDLE |
-| 1 | Requestor | Portal form: upload dataset/model, pick task kind (MVP implements Inference) | Task = SUBMITTED |
-| 2 | Server: Slicer (04) | Difficulty estimate, mode choice, chunks of fitted size, hashes, hidden canary chunks, manifest; per-task swarm created and seeded by the server side | Task = SLICED, PUBLISHED |
-| 3 | Server: Allocator (05) | Match chunks to online seeders (tier, memory, availability), add replicas for risky nodes, send `task_assign` | Chunk = ASSIGNED |
-| 4 | Seeder: WebTorrent client | Join the private swarm named in the assignment, download model and chunks, verify hashes, resume if interrupted | Seeder reports `downloading` |
-| 5 | Seeder: Docker sandbox | Fresh disposable container, CPU/memory/GPU limits, no network, chunk mounted read-only, run inference | Seeder reports `running` |
-| 6 | Seeder: Networking Client | Send `result_submit` per chunk and `status_update: completed`; leave swarm; destroy container | Chunk = RETURNED |
-| 7 | Server: Verification (06) | Canary check, replica comparison, partial re-run audit | Chunk = VERIFIED or FAILED |
-| 8 | Server: Reassembly | Collect verified chunks, check count and order, stitch into final output | Task = REASSEMBLED |
-| 9 | Server: Credits (09) | Credit verified work, penalize cheating, send `verdict_notice` | Ledger updated |
-| 10 | Portal | Show final result, history | Task = COMPLETED |
-| 11 | Seeder app | Local stats and credit balance updated; idle again | Seeder = IDLE |
+## Future work that is not simulated
 
-## C. Failure flows
+- Trackerless libp2p data transfer: authenticated chunk protocol, relay-based file transfer, resumability, and tested fallback. Existing libp2p discovery/relay code does not move files.
+- Full VeriLLM and robust canary architecture: hidden-state/pre-fill checks, sound challenge generation, peer prediction, collusion resistance, dispute handling, and measured security properties. Current Merkle records and known-answer probes are narrower MVP aids only.
+- Internet-scale discovery/NAT traversal, multi-coordinator operation, multi-user authorization, and production incentives.
 
-1. **Connection drops mid-task (NC-6):** seeder tries to resume; if resume fails it marks the task failed locally, re-registers, and the server reassigns the chunk.
-2. **Container crash, timeout or limit exceeded (DS-5):** seeder reports `failed` with a reason; no silent retry on the seeder; server reassigns.
-3. **Heartbeat lost:** server marks seeder offline, chunk back to PENDING, allocator reassigns (prefer a seeder that already has the chunk).
-4. **Verification failure:** result rejected, seeder penalized, chunk re-run elsewhere.
-5. **Hash mismatch on download:** discard, re-download from other peers or the server seed.
-6. **Docker missing on the seeder (NFR-3):** app shows a clear message and installation guidance, never accepts tasks.
-7. **Server restarts:** state rebuilt from PostgreSQL; seeders re-register automatically.
-8. **User pauses seeding (APP-4):** seeder stops accepting new tasks; current task finishes or is handed back by the server.
-
-## D. State machines
-
-Task: `SUBMITTED -> SLICED -> PUBLISHED -> DISPATCHED -> VERIFYING -> REASSEMBLED -> COMPLETED` (or `FAILED`, `CANCELLED`).
-Chunk: `PENDING -> ASSIGNED -> DOWNLOADING -> RUNNING -> RETURNED -> VERIFIED` (or `FAILED -> PENDING` retry, then task FAILED after max retries).
-Seeder-reported states (status_update): `queued | downloading | running | completed | failed`.
-Seeder: `OFFLINE -> ONLINE/IDLE -> BUSY -> IDLE`, plus `PAUSED` (user) and `SUSPENDED` (server, after verification abuse).
-
-## E. What the requestor sees
-
-Submitted -> Analysing difficulty -> Sliced into N chunks -> Assigned to M seeders -> Downloading -> Running (per-chunk progress) -> Verifying -> Reassembling -> Final result ready.
-
-## F. Workload types
-
-The pipeline is workload-agnostic. Task kinds in the requirements are Preprocessing, Inference, Training and LoRA. **MVP implements Inference** (batch LLM prompts). Other kinds exist as a field in `task_assign` only; full-scale model training is out of scope per the proposal.
+Do not describe these roadmap components as implemented. See [implementation status](IMPLEMENTATION-STATUS.md).

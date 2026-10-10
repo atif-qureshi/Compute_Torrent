@@ -548,7 +548,7 @@ async def get_task(task_id: str):
         db = get_db()
         try:
             task = db.query(Task).filter(Task.task_id == task_id).first()
-            if not task:
+            if not task or task.submitter_id == "__system_canary__":
                 raise HTTPException(status_code=404, detail="Task not found")
             
             return {
@@ -571,7 +571,27 @@ async def get_task(task_id: str):
     else:
         if task_id not in MOCK_TASKS:
             raise HTTPException(status_code=404, detail="Task not found")
-        return MOCK_TASKS[task_id]
+        task = MOCK_TASKS[task_id]
+        if task.get("submitter_id") == "__system_canary__":
+            raise HTTPException(status_code=404, detail="Task not found")
+        chunks = task.get("chunks", [])
+        return {
+            "task_id": task["task_id"],
+            "status": task.get("status", "pending"),
+            "model_name": task.get("model_name"),
+            "prompt": task.get("prompt"),
+            "created_at": task.get("created_at"),
+            "completed_at": task.get("completed_at"),
+            "result": task.get("result"),
+            "progress": {"completed": sum(c.get("status") == "verified" for c in chunks),
+                         "total": len(chunks)},
+            "mode": (chunks or [{}])[0].get("mode", task.get("mode", "WS-RR")),
+            # Do not return prompts' private canary markers or verifier-only data.
+            "chunks": [{"chunk_id": c["chunk_id"], "index": c["index"],
+                        "status": c["status"], "verification": c.get("verification"),
+                        "failure_reason": c.get("failure_reason")}
+                       for c in chunks],
+        }
 
 @app.get("/api/tasks")
 async def list_tasks(status: Optional[str] = None, limit: int = 50, submitter_id: Optional[str] = None):
@@ -581,6 +601,7 @@ async def list_tasks(status: Optional[str] = None, limit: int = 50, submitter_id
         db = get_db()
         try:
             query = db.query(Task)
+            query = query.filter(Task.submitter_id != "__system_canary__")
             if status:
                 query = query.filter(Task.status == status)
             if submitter_id:
@@ -602,11 +623,15 @@ async def list_tasks(status: Optional[str] = None, limit: int = 50, submitter_id
             db.close()
     else:
         tasks = list(MOCK_TASKS.values())
+        tasks = [t for t in tasks if t.get("submitter_id") != "__system_canary__"]
         if submitter_id:
             tasks = [t for t in tasks if t.get("submitter_id") == submitter_id]
         if status:
             tasks = [t for t in tasks if t.get("status") == status]
-        return tasks[:limit]
+        return [{"task_id": t["task_id"], "status": t.get("status", "pending"),
+                 "model_name": t.get("model_name"), "mode": t.get("mode", "WS-RR"),
+                 "created_at": t.get("created_at"), "submitter_id": t.get("submitter_id")}
+                for t in tasks[:limit]]
 
 @app.get("/api/seeders")
 async def list_seeders():
@@ -1196,7 +1221,7 @@ async def allocate_pending_tasks():
                     "require_cuda": bool(chunk.get("requirements", {}).get("require_cuda")),
                     "cuda_available": bool((manager.seeder_info.get(seeder_id, {}).get("profile", {})).get("CUDA")),
                     "timeout_seconds": 1800, "max_tokens": chunk["max_tokens"], "seed": chunk["seed"],
-                    "index": chunk["index"], "manifest_mode": "WS-RR"}))
+                    "index": chunk["index"], "manifest_mode": chunk.get("mode", "WS-RR")}))
             db.commit()
         finally:
             db.close()
@@ -1231,7 +1256,7 @@ async def allocate_pending_tasks():
                 "require_cuda": bool(chunk.get("requirements", {}).get("require_cuda")),
                 "cuda_available": bool((manager.seeder_info.get(seeder_id, {}).get("profile", {})).get("CUDA")),
                 "timeout_seconds": 1800, "max_tokens": chunk["max_tokens"], "seed": chunk["seed"],
-                "index": chunk["index"], "manifest_mode": "WS-RR"}))
+                "index": chunk["index"], "manifest_mode": chunk.get("mode", "WS-RR")}))
     for seeder_id, assignment in assignments:
         manager.seeder_info.setdefault(seeder_id, {})["busy"] = True
         if seeder_id in MOCK_SEEDERS:

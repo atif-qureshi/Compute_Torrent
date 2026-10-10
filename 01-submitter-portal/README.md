@@ -1,56 +1,26 @@
-# 01 — Requestor Web Portal (WP-1 to WP-5)
+# ComputeTorrent submitter portal
 
-## Purpose
-The **Leecher/Requestor** web app: submit a task, watch it run live across seeders, and get the final merged result. Secondary priority behind the seeder-side flow: build it after the seeder demo works end to end (WP-5).
+The local Next.js portal provides the requestor workspace for the current inference MVP.
 
-## Requirements
-| ID | Requirement | How we meet it |
-|---|---|---|
-| WP-1 | Task form: upload dataset/model, pick task type (Preprocessing, Inference, Training, LoRA) | Form with file upload, task kind selector, privacy level, model version; **MVP runs Inference only**, other kinds are shown as "coming soon" or accepted but flagged |
-| WP-2 | Live dashboard: swarm status, number of active seeders on the task, per-chunk progress, via Socket.io | Task detail page subscribed to the server feed |
-| WP-3 | Result view/download once reassembly signals completion | Results tab with ordered outputs and download |
-| WP-4 | Basic credit/history view | History list with outcomes and a credits balance page |
-| WP-5 | Secondary priority | Built in phase after the seeder demo (docs/BUILD-ORDER.md) |
+## Available pages
 
-The progress timeline mirrors the flow: Submitted -> Analysing difficulty -> Sliced into N chunks -> Assigned to M seeders -> Downloading -> Running -> Verifying -> Reassembling -> Final result ready.
+- **Workspace:** select a registered GGUF model, enter one prompt or a batch of up to 500 independent prompts, set output-token and worker RAM/CUDA requirements, and select WS-RR or CC-BP scheduling.
+- **Network:** see connected provider PCs and available CPU/GPU/RAM profile details, revoke a provider credential, copy the coordinator WebSocket address, and follow trusted-LAN join instructions.
+- **Task history:** poll task/chunk progress, inspect verification summaries, view completed results, and download result JSON.
+- **Credits:** inspect the requestor credit balance and ledger. Credits are demo accounting and have no cash value.
 
-## Screens (MVP)
-1. Login/Register (simple)
-2. New task (upload, kind, privacy level, estimate of difficulty and chunks)
-3. My tasks (list with status chips)
-4. Task detail: live dashboard, chunk table, verification summary, results, timing metrics
-5. Network overview: seeders online, tiers
-6. Credits and history
+The portal validates the prompt limits used by the coordinator and explains that prompts are sent to assigned volunteer PCs. The coordinator remains authoritative for model, hardware, credit, and task validation. Task submission is one request per batch; a batch of prompts costs one demo credit.
 
-## Inputs / Outputs
-| In | Out |
-|---|---|
-| user files and options | `POST` task to the coordination server |
-| Socket.io events | live UI updates |
-| result endpoint | rendered and downloadable output |
+## Local development
 
-## Dependencies
-- Needs: 02 (REST + Socket.io), 09 (credits, optional).
-- Tech: Next.js, React, TypeScript, Tailwind, Socket.io client.
+The canonical local stack builds this directory from the repository root with `docker-compose.local.yml`. For standalone development, install the package dependencies and set:
 
-## Rules
-1. Size and count limits enforced client side and server side.
-2. A requestor sees only their own tasks.
-3. Show a clear "what verification happened" badge so the research value is visible in the demo.
+```dotenv
+COMPUTETORRENT_ORCHESTRATOR_API_URL=http://127.0.0.1:8001/api
+COMPUTETORRENT_API_TOKEN=<same private value as the local coordinator>
+COMPUTETORRENT_PORTAL_PASSWORD=<private local password>
+COMPUTETORRENT_SESSION_SECRET=<at least 64 random characters>
+COMPUTETORRENT_COOKIE_SECURE=false
+```
 
-## Build steps
-1. Static layout with mock data.
-2. Task form wired to the API.
-3. Socket.io live updates.
-4. Result download and verification tab.
-5. History and credits.
-6. Demo polish (empty states, errors, loading).
-
-## Acceptance checks
-- Submit 20 prompts, see chunks progress live without refreshing.
-- Failed chunk shows reason and retry count.
-- Downloaded results keep the original prompt order.
-- Usable at phone width for demos.
-
-## Out of scope
-Payments, organizations and teams, admin panel (use database tools for the MVP).
+Run `npm run dev` and open `http://localhost:3000`. Keep the portal and coordinator local or on a trusted LAN; no domain/public deployment is needed. The portal uses one local operator login and the fixed `web-portal` requestor identity. It is not a multi-user hosted service.

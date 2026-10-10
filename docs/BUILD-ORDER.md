@@ -1,5 +1,7 @@
 # Build Order (one developer)
 
+> Historical build plan from the initial requirements. It records the intended order, not live completion status. Use [IMPLEMENTATION-STATUS.md](IMPLEMENTATION-STATUS.md) for what works now and which research layers remain future work.
+
 You build every part, so the order matters more than speed. Rule: **a working seeder demo against a mock server comes first**, then the real server, then research features. Sizes: S = a few days, M = 1 to 2 weeks, L = 2 to 4 weeks (rough, for one person). The proposal's Gantt (about 250 project days) is the upper bound; plan to stop at milestone M4 if time runs short.
 
 ## Phase 0 — Foundations (S)
@@ -65,7 +67,7 @@ You build every part, so the order matters more than speed. Rule: **a working se
 | M7 | Measured and packaged | benchmark dataset + installer |
 
 ## If time runs short, cut in this order
-1. WebRTC/STUN upgrade (relay only), 2. VeriLLM-lite, 3. second scheduling mode, 4. privacy level enforcement beyond a label, 5. exe packaging polish, 6. portal extras (history, network page). **Never cut:** sandbox, canary verification, replica comparison, churn reassignment, benchmark harness.
+1. Trackerless libp2p file-transfer protocol and relay fallback, 2. full VeriLLM and robust canary architecture, 3. stronger multi-user/privacy enforcement, 4. installer polish, 5. portal improvements. Existing WebTorrent transfer, narrow output-hash canaries, replica checks and output-transcript receipts are MVP implementations with limits; do not represent the future protocols as complete. See [implementation status](IMPLEMENTATION-STATUS.md).
 
 ## Working habits for a solo builder
 - Keep the mock server forever; it makes seeder-side testing independent of the real server.

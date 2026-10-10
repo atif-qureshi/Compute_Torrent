@@ -1,57 +1,35 @@
-# 07 — Network Layer (per-task private WebTorrent swarms + connectivity)
+# 07 — Network Layer
 
-## Purpose
-Move datasets, models and prompt chunks between the server side and seeders through **private per-task swarms**, and keep seeders reachable through the relay with an optional direct upgrade. This module covers the data plane; the control plane (WebSocket messages) belongs to modules 02 and 08/02-networking-client.
+## Working MVP data path
 
-## Design decisions (from the requirements document)
-| Topic | Decision |
+The swarm service uses private WebTorrent swarms to deliver registered model files and per-task prompt payloads to providers. It uses the configured WebTorrent tracker endpoints for WebRTC peer signalling. WebTorrent piece integrity is supplemented by manifest SHA-256 checks after download. Result text returns through the coordinator WebSocket.
+
+The same service also starts a libp2p LAN overlay using Kademlia peer discovery and Circuit Relay v2. Providers can join the coordinator's advertised peer address, and the portal can display the overlay's connected-peer count. The overlay is real networking code, but it is **not currently integrated into the model/prompt file transfer path**.
+
+## Status by capability
+
+| Capability | Status |
 |---|---|
-| Swarm scope | One private swarm **per task**, only that task's server-side seeder and its assigned seeders (WT-1) |
-| Integrity | SHA-1 piece hashing built into WebTorrent plus our own SHA-256 chunk hashes from the manifest |
-| Lifetime | Swarm is torn down after the task completes; seeders leave and stop seeding (WT-4) |
-| Connectivity | Relay through the coordination server by default; try STUN then WebRTC for a direct link; failure is silent (NC-4) |
-| Discovery | The assignment message names the swarm (`swarm_id`, infohash); no public tracker or public DHT needed |
-| libp2p Kademlia DHT and Circuit Relay | Listed in the research proposal; **optional, post-MVP**. The MVP uses the WebSocket relay and STUN instead |
+| Private per-task WebTorrent swarms | Implemented; configured trackers are still used for WebRTC signalling. |
+| Model and prompt transfer | Implemented over WebTorrent, with manifest SHA-256 validation at the provider. |
+| Per-task swarm cleanup | Implemented by the coordinator after task completion or failure. |
+| libp2p LAN DHT and Circuit Relay overlay | Implemented for peer discovery/connectivity reporting; not used to transport task files. |
+| Trackerless libp2p data plane and relay-based file transfer | Future architecture work. Do not present this as an active transfer fallback. |
+| Internet-scale NAT traversal and volunteer discovery | Future work; current multi-PC guidance is for a trusted LAN. |
 
-## Responsibilities
-1. **Server-side swarm service (Node.js):** create a torrent for a task's chunks and model reference, seed it, return the infohash, tear it down on completion or failure.
-2. **Seeder-side transfer:** implemented in `08-provider-node/04-webtorrent-sync`, using the same protocol.
-3. **Connectivity helper:** STUN check and WebRTC upgrade attempt where supported; relay fallback.
-4. **Integrity and bad peers:** discard bad pieces, re-fetch, drop peers that serve corrupted data.
-5. **Resource control:** upload and download rate limits configurable per seeder.
-6. **Local control API:** a small local interface so the Python server can say "create swarm", "tear down swarm", "status of swarm".
+## Boundaries
 
-## Inputs / Outputs
-| In | Out |
-|---|---|
-| task payload files and manifest | swarm_id, infohash, seeding status |
-| teardown request | confirmation that the swarm is gone |
-| peer events | active seeder count per swarm (for the portal, WP-2) |
+- WebSocket carries assignments, progress, verdicts, and inline results; it is the centralized control channel.
+- WebTorrent carries model and prompt files. Tracker services may observe peer connection metadata even though the torrents are private and content hashes are verified.
+- A private magnet URI is a bearer capability. Only share it with intended providers.
+- The libp2p peer overlay and WebTorrent transport are separate paths today. Failure to join libp2p does not fall back to trackerless file transfer; WebTorrent remains the configured data path.
+- Never expose the local coordinator or swarm administration API to the public internet as part of this development setup.
 
-## Dependencies
-- Standalone core; soft dependency on 10 (model files and versions).
-- Used by: 02 (creates and tears down swarms), 04 (payload files), 08 (seeder download).
-- Tech: Node.js, WebTorrent; WebRTC/STUN support in the Node process; Socket.io only for status events if needed.
+## Future implementation work
 
-## Rules
-1. Never trust a peer: verify before use.
-2. A swarm must contain only the people who belong to that task.
-3. The server side keeps seeding a task's data until all assigned seeders finish or the task fails, then tears the swarm down.
-4. Small payloads may go directly over the WebSocket; use the swarm when size justifies it. Measure the threshold in module 11.
+1. Define an authenticated libp2p data protocol for model/prompt manifests and chunks.
+2. Add relay-assisted transfer, peer authorization, resumability, and abuse limits.
+3. Make providers select a transport based on a real end-to-end transfer probe.
+4. Test multi-peer LAN churn and failure recovery before describing trackerless transfer as available.
 
-## Build steps
-1. Two processes on one PC share a test file through a swarm.
-2. Server creates a per-task swarm; a test seeder joins by infohash and downloads.
-3. Add hash check, interruption and resume test.
-4. Add teardown and verify nothing keeps seeding.
-5. Add STUN/WebRTC attempt with relay fallback.
-6. (Optional later) libp2p DHT and Circuit Relay.
-
-## Acceptance checks
-- A seeder downloads its chunk from the task swarm and cannot see another task's swarm.
-- A corrupted piece is detected and re-fetched.
-- After completion, the swarm no longer exists and no process seeds the task's data.
-- When WebRTC fails, the transfer still works through the relay with no user-visible error.
-
-## Out of scope
-Public torrents, incentivized seeding, global-scale discovery tuning.
+See [implementation status](../docs/IMPLEMENTATION-STATUS.md) and [local multi-PC setup](../IMPLEMENTATION-SETUP.md).

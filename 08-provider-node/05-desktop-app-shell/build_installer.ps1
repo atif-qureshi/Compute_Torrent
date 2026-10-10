@@ -6,6 +6,10 @@ Write-Output ""
 $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot
 $SyncPath = (Resolve-Path "..\04-webtorrent-sync").Path
+$PythonCommand = Get-Command python.exe -ErrorAction SilentlyContinue
+if (-not $PythonCommand) {
+    throw "Python 3 must be installed on this build machine."
+}
 if (-not (Get-Command node.exe -ErrorAction SilentlyContinue)) {
     throw "Node.js must be installed on this build machine to bundle WebTorrent."
 }
@@ -17,16 +21,20 @@ if ($nodeMajor -lt 22) {
 
 # Install dependencies
 Write-Output "📦 Installing dependencies..."
-pip install -r requirements.txt --quiet
-pip install pyinstaller --quiet
+& $PythonCommand.Source -m pip install -r requirements.txt --quiet
+if ($LASTEXITCODE -ne 0) { throw "Could not install desktop application dependencies." }
+& $PythonCommand.Source -m pip install pyinstaller --quiet
+if ($LASTEXITCODE -ne 0) { throw "Could not install PyInstaller." }
 Push-Location $SyncPath
-npm install --omit=dev
+npm ci --omit=dev
+if ($LASTEXITCODE -ne 0) { Pop-Location; throw "Could not install the locked WebTorrent helper dependencies." }
 Pop-Location
 
 # Build executable
 Write-Output ""
 Write-Output "🏗️ Building executable..."
-pyinstaller seeder.spec --clean --noconfirm
+& $PythonCommand.Source -m PyInstaller seeder.spec --clean --noconfirm
+if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed to package the desktop application." }
 
 Write-Output ""
 if (Test-Path "dist\ComputeTorrent_Seeder.exe") {

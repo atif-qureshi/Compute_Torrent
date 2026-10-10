@@ -43,9 +43,9 @@ DEFAULT_ORCHESTRATOR_URL = os.getenv("ORCHESTRATOR_URL", "ws://127.0.0.1:8001/ws
 class ComputeTorrentSeeder(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("ComputeTorrent Seeder - Production")
-        self.geometry("900x900")
-        self.minsize(760, 760)
+        self.title("ComputeTorrent Provider")
+        self.geometry("980x820")
+        self.minsize(760, 640)
         self.resizable(True, True)
         
         # State
@@ -61,6 +61,8 @@ class ComputeTorrentSeeder(ctk.CTk):
             self.settings = json.loads(self.settings_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             self.settings = {}
+        had_legacy_join_code = "enrollment_token" in self.settings
+        self.settings.pop("enrollment_token", None)
         self.recent_work = list(self.settings.get("recent_work", []))[-20:]
         os.environ.setdefault("COMPUTETORRENT_MODELS_DIR", str(self.app_data / "models"))
         self.sync_client = WebTorrentClient(str(self.app_data))
@@ -71,14 +73,19 @@ class ComputeTorrentSeeder(ctk.CTk):
         self.node_id = self.settings.get("node_id")
         self.access_token = self.settings.get("access_token")
         self.orchestrator_url = self.settings.get("orchestrator_url", DEFAULT_ORCHESTRATOR_URL)
-        self.enrollment_token = self.settings.get("enrollment_token", "")
+        # The network-wide enrollment code is a one-time secret; keep it in
+        # memory only and persist only this provider's revocable credential.
+        self.enrollment_token = ""
         self.cpu_limit = int(self.settings.get("cpu_limit", 2))
         self.memory_limit_gb = int(self.settings.get("memory_limit_gb", 8))
         self.paused = False
         self.event_loop = None
+        self.shutting_down = False
         
         # Detect hardware
         self.profile = self.detect_hardware()
+        if had_legacy_join_code:
+            self.save_settings()
         self.protocol("WM_DELETE_WINDOW", self.close_application)
         
         # Show onboarding
@@ -87,7 +94,7 @@ class ComputeTorrentSeeder(ctk.CTk):
     def detect_hardware(self):
         """Detect system hardware"""
         ram_gb = psutil.virtual_memory().total // (1024 ** 3)
-        cpu_cores = psutil.cpu_count()
+        cpu_cores = psutil.cpu_count() or 1
         
         # GPU detection
         gpu = None
@@ -137,15 +144,15 @@ class ComputeTorrentSeeder(ctk.CTk):
     
     def show_onboarding(self):
         self.clear_screen()
-        frame = ctk.CTkFrame(self)
+        frame = ctk.CTkScrollableFrame(self)
         frame.pack(fill="both", expand=True, padx=30, pady=30)
         
         # Header
-        title = ctk.CTkLabel(frame, text="ComputeTorrent Seeder", 
+        title = ctk.CTkLabel(frame, text="ComputeTorrent Provider",
                            font=("Arial", 28, "bold"))
         title.pack(pady=20)
         
-        subtitle = ctk.CTkLabel(frame, text="🌐 Decentralized P2P LLM Inference", 
+        subtitle = ctk.CTkLabel(frame, text="🌐 Volunteer-computing node",
                               font=("Arial", 14), text_color="gray")
         subtitle.pack(pady=5)
         
@@ -163,12 +170,12 @@ class ComputeTorrentSeeder(ctk.CTk):
 🐳 Docker: {'✅ Available' if self.profile['docker_ok'] else '❌ Not Available'}
 
 📊 Capability Tier: {self.profile['tier']}
-{'✨ Tier 1 - Eligible for GPU inference tasks (high rewards)' if self.profile['tier'] == 1 else '⚡ Tier 2 - Eligible for CPU tasks'}
+{'✨ Tier 1 - Eligible for GPU inference tasks' if self.profile['tier'] == 1 else '⚡ Tier 2 - Eligible for CPU inference tasks'}
 
-💰 Earnings potential: ~10 credits per task
+💰 Verified contribution credits are demo accounting with no cash value.
 """
         
-        info_box = ctk.CTkTextbox(frame, height=280, width=750, font=("Courier New", 11))
+        info_box = ctk.CTkTextbox(frame, height=230, width=750, font=("Courier New", 11))
         info_box.pack(pady=20, padx=20)
         info_box.insert("1.0", info_text)
         info_box.configure(state="disabled")
@@ -176,7 +183,12 @@ class ComputeTorrentSeeder(ctk.CTk):
         connection_card = ctk.CTkFrame(frame)
         connection_card.pack(fill="x", padx=20, pady=5)
         ctk.CTkLabel(connection_card, text="Network connection", font=("Arial", 15, "bold")).pack(anchor="w", padx=12, pady=(10, 4))
-        ctk.CTkLabel(connection_card, text="Local coordinator WebSocket URL (LAN example: ws://192.168.1.5:8001/ws/seeder)").pack(anchor="w", padx=12)
+        ctk.CTkLabel(connection_card,
+            text="Use the coordinator PC's private LAN address on other computers. Never enter localhost from a different PC.",
+            wraplength=790, justify="left", text_color="#aebbd1").pack(anchor="w", padx=12, pady=(0, 5))
+        ctk.CTkLabel(connection_card,
+            text="Examples: this PC: ws://127.0.0.1:8001/ws/seeder  ·  another PC: ws://192.168.1.5:8001/ws/seeder",
+            wraplength=790, justify="left", text_color="#8fa4d4").pack(anchor="w", padx=12, pady=(0, 5))
         self.server_entry = ctk.CTkEntry(connection_card, width=680, placeholder_text="ws://127.0.0.1:8001/ws/seeder")
         self.server_entry.pack(fill="x", padx=12, pady=(4, 8))
         self.server_entry.insert(0, self.orchestrator_url)
@@ -185,6 +197,9 @@ class ComputeTorrentSeeder(ctk.CTk):
         self.enrollment_entry.pack(fill="x", padx=12, pady=(4, 8))
         if self.enrollment_token:
             self.enrollment_entry.insert(0, self.enrollment_token)
+        ctk.CTkLabel(connection_card,
+            text="Ask the operator for the join code from their private .env file. Each enrolled PC receives its own revocable credential.",
+            wraplength=790, justify="left", text_color="#aebbd1").pack(anchor="w", padx=12, pady=(0, 6))
         limits = ctk.CTkFrame(connection_card, fg_color="transparent")
         limits.pack(fill="x", padx=12, pady=(2, 8))
         ctk.CTkLabel(limits, text="Max CPU cores").pack(side="left")
@@ -234,7 +249,7 @@ class ComputeTorrentSeeder(ctk.CTk):
         except ValueError:
             self.connection_error.configure(text="CPU and RAM limits must be whole numbers")
             return
-        self.settings.update({"orchestrator_url": self.orchestrator_url, "enrollment_token": self.enrollment_token,
+        self.settings.update({"orchestrator_url": self.orchestrator_url,
                               "cpu_limit": self.cpu_limit, "memory_limit_gb": self.memory_limit_gb})
         self.save_settings()
         self.show_dashboard()
@@ -244,8 +259,9 @@ class ComputeTorrentSeeder(ctk.CTk):
     def save_settings(self):
         self.settings.update({"node_id": self.node_id, "access_token": self.access_token,
                               "orchestrator_url": self.orchestrator_url,
-                              "enrollment_token": self.enrollment_token,
-                              "cpu_limit": self.cpu_limit, "memory_limit_gb": self.memory_limit_gb})
+                              "cpu_limit": self.cpu_limit, "memory_limit_gb": self.memory_limit_gb,
+                              "recent_work": self.recent_work[-20:]})
+        self.settings.pop("enrollment_token", None)
         temporary = self.settings_path.with_suffix(".tmp")
         temporary.write_text(json.dumps(self.settings, indent=2), encoding="utf-8")
         temporary.replace(self.settings_path)
@@ -277,7 +293,7 @@ class ComputeTorrentSeeder(ctk.CTk):
         loop.run_until_complete(self.connect_to_orchestrator())
 
     def start_libp2p_peer(self):
-        """Join the coordinator's LAN Kademlia DHT and Circuit Relay v2 mesh."""
+        """Join the optional LAN discovery/relay overlay (not the file data plane)."""
         if self.libp2p_process and self.libp2p_process.poll() is None:
             return
         try:
@@ -302,16 +318,25 @@ class ComputeTorrentSeeder(ctk.CTk):
                 cwd=str(self.libp2p_helper.parent), stdin=subprocess.DEVNULL,
                 stdout=self.libp2p_log, stderr=self.libp2p_log,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-            self.update_status("Joining trackerless libp2p DHT and relay mesh…")
+            self.update_status("Joining libp2p LAN discovery and relay overlay…")
             time.sleep(1.0)
             if self.libp2p_process.poll() is not None:
                 raise RuntimeError("libp2p peer exited during startup; see %LOCALAPPDATA%\\ComputeTorrent\\libp2p.log")
-            self.update_status("libp2p LAN mesh joined; WebTorrent remains enabled for model transfer")
+            self.update_status("LAN peer overlay connected; files still transfer over WebTorrent")
         except Exception as error:
-            self.update_status(f"libp2p mesh unavailable ({error}); WebTorrent fallback remains active")
+            self.update_status(f"LAN peer overlay unavailable ({error}); WebTorrent transfer remains active")
 
     def close_application(self):
         """Stop the background peer before closing the desktop app."""
+        if self.shutting_down:
+            return
+        self.shutting_down = True
+        if self.websocket and self.event_loop and self.event_loop.is_running():
+            try:
+                close_future = asyncio.run_coroutine_threadsafe(self.websocket.close(), self.event_loop)
+                close_future.result(timeout=3)
+            except Exception:
+                pass
         if self.libp2p_process and self.libp2p_process.poll() is None:
             self.libp2p_process.terminate()
             try:
@@ -320,12 +345,15 @@ class ComputeTorrentSeeder(ctk.CTk):
                 self.libp2p_process.kill()
         if self.libp2p_log:
             self.libp2p_log.close()
-        self.destroy()
+        try:
+            self.destroy()
+        except Exception:
+            pass
     
     async def connect_to_orchestrator(self):
         """Connect to orchestrator via WebSocket"""
         retry_count = 0
-        while True:
+        while not self.shutting_down:
             try:
                 self.update_status(f"Connecting to {self.orchestrator_url}...")
                 if not self.access_token:
@@ -374,9 +402,13 @@ class ComputeTorrentSeeder(ctk.CTk):
                         self.is_connected = False
                         
             except Exception as e:
+                if self.shutting_down:
+                    break
                 self.update_status(f"Connection issue: {e}")
             retry_count += 1
             delay = min(60, 2 ** min(retry_count, 6))
+            if self.shutting_down:
+                break
             self.update_status(f"Offline; retrying in {delay}s")
             await asyncio.sleep(delay)
     
@@ -452,24 +484,31 @@ class ComputeTorrentSeeder(ctk.CTk):
             if not model_path.is_file():
                 await asyncio.to_thread(self.sync_client.download_from_swarm,
                     task_data.get("model_magnet_uri", ""), f"model-{task_data['model_name']}",
-                    str(model_path.parent), task_data.get("model_sha256", ""), task_data["model_file"])
+                    str(model_path.parent), task_data.get("model_sha256", ""), task_data["model_file"],
+                    lambda progress: self.update_task_info(f"📥 Model download: {progress}"))
             if task_data.get("adapter_file"):
                 adapter_path = model_path.parent / task_data["adapter_file"]
                 if not adapter_path.is_file():
                     await asyncio.to_thread(self.sync_client.download_from_swarm,
                         task_data.get("model_magnet_uri", ""), f"model-{task_data['model_name']}-adapter",
-                        str(model_path.parent), task_data.get("model_sha256", ""), task_data["model_file"])
+                        str(model_path.parent), task_data.get("model_sha256", ""), task_data["model_file"],
+                        lambda progress: self.update_task_info(f"📥 Model download: {progress}"))
             chunk_path = await asyncio.to_thread(self.sync_client.download_from_swarm,
                 task_data.get("swarm_id", ""), task_data.get("chunk_id", task_id),
                 str(self.sync_client.workspace / "workspace" / task_data.get("chunk_id", task_id)),
-                task_data.get("payload_sha256", ""))
+                task_data.get("payload_sha256", ""),
+                progress_callback=lambda progress: self.update_task_info(f"📥 Task download: {progress}"))
             payload = json.loads(chunk_path.read_text(encoding="utf-8"))
             task_data["prompt"] = payload["prompt"]
             task_data["cpu_limit"] = self.cpu_limit
             task_data["memory_limit_gb"] = self.memory_limit_gb
             self.update_task_info(f"⚙️ Running: {task_id}")
             await self.send_status("running", task_id, chunk_id=task_data.get("chunk_id"))
-            execution = await asyncio.to_thread(run_inference, task_data)
+            execution = await asyncio.to_thread(
+                run_inference,
+                task_data,
+                workspace_dir=str(self.app_data / "workspace" / "inference"),
+            )
             await self.send_result(task_data, execution)
             await self.send_status("completed", task_id, chunk_id=task_data.get("chunk_id"))
             
@@ -513,11 +552,11 @@ class ComputeTorrentSeeder(ctk.CTk):
     
     def show_dashboard(self):
         self.clear_screen()
-        frame = ctk.CTkFrame(self)
+        frame = ctk.CTkScrollableFrame(self)
         frame.pack(fill="both", expand=True, padx=25, pady=25)
         
         # Title
-        title = ctk.CTkLabel(frame, text="🖥️ Seeder Dashboard", 
+        title = ctk.CTkLabel(frame, text="🖥️ Provider Dashboard",
                            font=("Arial", 24, "bold"))
         title.pack(pady=15)
         
@@ -560,7 +599,7 @@ class ComputeTorrentSeeder(ctk.CTk):
         metrics_right = ctk.CTkFrame(stats_grid)
         metrics_right.grid(row=2, column=1, sticky="ew", padx=5, pady=5)
         
-        ctk.CTkLabel(metrics_right, text="Credits Earned", 
+ctk.CTkLabel(metrics_right, text="Credits Earned",
                     font=("Arial", 11, "bold")).pack(pady=5)
         self.credits_label = ctk.CTkLabel(metrics_right, text="0", 
                                          font=("Arial", 24, "bold"),
@@ -583,14 +622,14 @@ Coordinator: {self.orchestrator_url}
 Resource limit: {self.cpu_limit} CPU cores / {self.memory_limit_gb} GB RAM
 Model cache: {self.app_data / 'models'}
 
-This seeder will:
+        This seeder will:
 ✅ Maintain connection with orchestrator
 ✅ Receive task assignments automatically
 ✅ Execute tasks in isolated Docker containers
-✅ Report results and earn credits
+✅ Report verified contribution results
 ✅ Auto-reconnect if connection drops
 
-Ready to earn credits! 💰
+Credits are demo accounting only and have no cash value.
 """
         
         info_box = ctk.CTkTextbox(frame, height=200, width=750)
@@ -607,7 +646,7 @@ Ready to earn credits! 💰
         
         quit_btn = ctk.CTkButton(btn_frame, text="🚪 Quit", width=140,
                                 fg_color="#ff5252", hover_color="#c62828",
-                                command=self.quit)
+                                command=self.close_application)
         quit_btn.pack(side="left", padx=8)
 
     def toggle_pause(self):
@@ -619,20 +658,32 @@ Ready to earn credits! 💰
             asyncio.run_coroutine_threadsafe(self.send_heartbeat_once(self.websocket), self.event_loop)
     
     def update_status(self, text):
-        if hasattr(self, 'status_label'):
-            self.after(0, lambda: self.status_label.configure(text=f"Status: {text}"))
+        if hasattr(self, 'status_label') and not self.shutting_down:
+            try:
+                self.after(0, lambda: self.status_label.configure(text=f"Status: {text}") if not self.shutting_down else None)
+            except RuntimeError:
+                pass
     
     def update_task_info(self, text):
-        if hasattr(self, 'task_label'):
-            self.after(0, lambda: self.task_label.configure(text=text))
+        if hasattr(self, 'task_label') and not self.shutting_down:
+            try:
+                self.after(0, lambda: self.task_label.configure(text=text) if not self.shutting_down else None)
+            except RuntimeError:
+                pass
     
     def update_tasks_count(self, count):
-        if hasattr(self, 'count_label'):
-            self.after(0, lambda: self.count_label.configure(text=str(count)))
+        if hasattr(self, 'count_label') and not self.shutting_down:
+            try:
+                self.after(0, lambda: self.count_label.configure(text=str(count)) if not self.shutting_down else None)
+            except RuntimeError:
+                pass
     
     def update_credits(self, credits):
-        if hasattr(self, 'credits_label'):
-            self.after(0, lambda: self.credits_label.configure(text=str(credits)))
+        if hasattr(self, 'credits_label') and not self.shutting_down:
+            try:
+                self.after(0, lambda: self.credits_label.configure(text=str(credits)) if not self.shutting_down else None)
+            except RuntimeError:
+                pass
 
     def update_work_history(self):
         if not hasattr(self, "history_box"):
@@ -647,7 +698,11 @@ Ready to earn credits! 💰
                         for item in self.recent_work[:10]]
                 self.history_box.insert("1.0", "\n".join(rows))
             self.history_box.configure(state="disabled")
-        self.after(0, render)
+        if not self.shutting_down:
+            try:
+                self.after(0, render)
+            except RuntimeError:
+                pass
 
 def main():
     app = ComputeTorrentSeeder()

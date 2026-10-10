@@ -14,8 +14,8 @@
 
 ## 2. Honest simplifications (state these in the defense)
 
-- **Verification is "-lite":** Canary, replication comparison and partial re-run are adapted to run without blockchain. The proposal's literature table notes VeriLLM expects on-chain checks; the MVP replaces that with orchestrator-held records. Say this explicitly.
-- **Orchestrator is central** for control; only data and discovery are trackerless.
+- **Verification is a limited MVP:** exact-output replica comparison, optional separate known-answer canary tasks, and a Merkle output-transcript receipt are implemented. Partial re-run, full VeriLLM hidden-state verification, robust canary security, peer prediction, and dispute handling are future work.
+- **Orchestrator is central** for control. WebTorrent currently transfers files and uses configured tracker signalling. libp2p provides a separate LAN discovery/relay overlay; it is not a trackerless file-transfer path.
 - **CPU-first**, GPU optional; proposal scope says consumer NVIDIA GPUs, so include at least one GPU run if hardware exists.
 - **Small scale:** a handful of nodes, simulated churn and latency.
 
@@ -50,7 +50,7 @@ These are inconsistencies noticed in the proposal PDF; verify against the real p
 | Container network | none by default | none; app downloads and mounts the chunk, app returns the result (resolves DS-3 vs WT-5) |
 | Tier naming | privacy tiers 1 to 3 | **capability tier** (hardware, 1 or 2) and **privacy level** (1 to 3) |
 | Model cache on seeder | not decided | not cached by default so no task files remain; optional setting later |
-| NAT traversal | libp2p Circuit Relay | WebSocket relay plus STUN/WebRTC; libp2p DHT and Circuit Relay post-MVP |
+| LAN peer connectivity | libp2p DHT and Circuit Relay v2 overlay | Implemented separately from WebTorrent; does not provide trackerless file transfer |
 | Requestor node | open question (options A and B) | Option A: logic lives in the Coordination Server; option B is future work |
 | Profile shape | `{GPU, VRAM, CUDA, RAM}` vs HP-1 asking for CPU cores | base four fields kept exactly; CPU cores and Docker status as extension fields |
 
@@ -63,7 +63,7 @@ These are inconsistencies noticed in the proposal PDF; verify against the real p
 | Python app plus Node WebTorrent helper | packaging and process management bugs | bundle the helper, local-only control interface, start and stop with the app |
 | One person owns server, seeder app, portal and research | schedule slip | follow docs/BUILD-ORDER.md cut order; stop at M4 at minimum |
 | Requirements mention Training and LoRA task types | scope creep against the proposal exclusions | only Inference is implemented; other kinds are a field only |
-| Tracker/relay server vs "trackerless" wording in the proposal | questions at the defense | use the wording in docs/FLOW.md section 0: no tracker for data, server for control only |
+| "Trackerless" wording vs active implementation | questions at the defense | WebTorrent file transfer uses configured trackers today; libp2p does not move files. Trackerless libp2p data transfer is future work. See docs/FLOW.md |
 | Requirements doc example ids (`abc123`, `swarm_abc123`) are placeholders | confusion in code | use UUIDs everywhere (CONTRACTS rule 4) |
 
 ## 7. Questions left open for you

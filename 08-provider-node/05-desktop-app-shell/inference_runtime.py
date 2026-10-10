@@ -22,6 +22,7 @@ def sha256_file(path: Path) -> str:
 
 
 def run_inference(task: dict, *, models_dir: str | None = None,
+                  workspace_dir: str | None = None,
                   image: str | None = None, docker: str = "docker") -> dict:
     """Run an assigned prompt with a locally provisioned GGUF model.
 
@@ -74,7 +75,12 @@ def run_inference(task: dict, *, models_dir: str | None = None,
     if not re.fullmatch(r"[A-Za-z0-9./:_@-]{1,256}", selected_image):
         raise ValueError("Invalid inference image reference")
 
-    workspace = Path(tempfile.mkdtemp(prefix="computetorrent-inference-"))
+    workspace_parent = Path(workspace_dir or os.getenv(
+        "COMPUTETORRENT_INFERENCE_WORKSPACE",
+        str(Path(os.getenv("LOCALAPPDATA", str(Path.home()))) / "ComputeTorrent" / "workspace" / "inference"),
+    )).expanduser().resolve()
+    workspace_parent.mkdir(parents=True, exist_ok=True)
+    workspace = Path(tempfile.mkdtemp(prefix="computetorrent-inference-", dir=workspace_parent))
     # The container runs as an unprivileged UID. Allow it to create only its
     # short-lived result in this dedicated bind mount (model data stays RO).
     try:
@@ -127,5 +133,10 @@ def run_inference(task: dict, *, models_dir: str | None = None,
         detail = (exc.stderr or exc.stdout or "llama.cpp exited unsuccessfully")[-1000:]
         raise RuntimeError(f"Inference failed: {detail}") from exc
     finally:
-        subprocess.run([docker, "rm", "-f", container], capture_output=True, timeout=15)
+        try:
+            subprocess.run([docker, "rm", "-f", container], capture_output=True, timeout=15)
+        except (OSError, subprocess.TimeoutExpired):
+            # Preserve the original inference error when Docker is missing or
+            # its daemon does not answer during cleanup.
+            pass
         shutil.rmtree(workspace, ignore_errors=True)

@@ -1,0 +1,99 @@
+﻿version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:18-alpine
+    container_name: computetorrent-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: computetorrent
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - computetorrent
+
+  # Orchestrator API
+  orchestrator:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.backend
+    container_name: computetorrent-orchestrator
+    depends_on:
+      postgres:
+        condition: service_healthy
+      swarm:
+        condition: service_started
+    environment:
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/computetorrent
+      COMPUTETORRENT_API_TOKEN: ${COMPUTETORRENT_API_TOKEN:?Set COMPUTETORRENT_API_TOKEN in .env}
+      COMPUTETORRENT_SEEDER_ENROLLMENT_TOKEN: ${COMPUTETORRENT_SEEDER_ENROLLMENT_TOKEN:?Set COMPUTETORRENT_SEEDER_ENROLLMENT_TOKEN in .env}
+      COMPUTETORRENT_LLAMA_IMAGE: ${COMPUTETORRENT_LLAMA_IMAGE:-ghcr.io/ggml-org/llama.cpp:light}
+      COMPUTETORRENT_LLAMA_CUDA_IMAGE: ${COMPUTETORRENT_LLAMA_CUDA_IMAGE:-ghcr.io/ggml-org/llama.cpp:full-cuda}
+      COMPUTETORRENT_SWARM_URL: http://swarm:4001
+      COMPUTETORRENT_SWARM_DATA: /data
+    volumes:
+      - ./runtime/swarm:/data
+      - ./backend/app/models.json:/app/app/models.json
+    ports:
+      - "${COMPUTETORRENT_BIND_IP:-127.0.0.1}:8001:8001"
+    networks:
+      - computetorrent
+    restart: unless-stopped
+
+  swarm:
+    build:
+      context: ./07-network-layer
+      dockerfile: Dockerfile
+    container_name: computetorrent-swarm
+    environment:
+      SWARM_DATA_DIR: /data
+      WEBTORRENT_TRACKERS: ${WEBTORRENT_TRACKERS:-wss://tracker.openwebtorrent.com,wss://tracker.webtorrent.dev}
+      LIBP2P_PORT: 9100
+      LIBP2P_ADVERTISE_HOST: ${COMPUTETORRENT_LIBP2P_ADVERTISE_HOST:-127.0.0.1}
+    volumes:
+      - ./runtime/swarm:/data
+    ports:
+      - "127.0.0.1:4001:4001"
+      - "${COMPUTETORRENT_LIBP2P_BIND_IP:-127.0.0.1}:9100:9100/tcp"
+    expose:
+      - "4001"
+    networks:
+      - computetorrent
+    restart: unless-stopped
+
+  # Submitter Portal (Next.js)
+  portal:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.frontend
+    container_name: computetorrent-portal
+    depends_on:
+      - orchestrator
+    environment:
+      COMPUTETORRENT_ORCHESTRATOR_API_URL: http://orchestrator:8001/api
+      COMPUTETORRENT_API_TOKEN: ${COMPUTETORRENT_API_TOKEN:?Set COMPUTETORRENT_API_TOKEN in .env}
+      COMPUTETORRENT_PORTAL_PASSWORD: ${COMPUTETORRENT_PORTAL_PASSWORD:?Set COMPUTETORRENT_PORTAL_PASSWORD in .env}
+      COMPUTETORRENT_SESSION_SECRET: ${COMPUTETORRENT_SESSION_SECRET:?Set COMPUTETORRENT_SESSION_SECRET in .env}
+      COMPUTETORRENT_COOKIE_SECURE: ${COMPUTETORRENT_COOKIE_SECURE:-false}
+    ports:
+      - "${COMPUTETORRENT_BIND_IP:-127.0.0.1}:3000:3000"
+    networks:
+      - computetorrent
+    restart: unless-stopped
+
+networks:
+  computetorrent:
+    driver: bridge
+
+volumes:
+  postgres_data:
+    driver: local

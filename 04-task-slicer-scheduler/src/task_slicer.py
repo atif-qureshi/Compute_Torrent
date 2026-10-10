@@ -21,6 +21,8 @@ class TaskSlicer:
 
     def __init__(self, max_prompts_per_chunk: int = 1):
         self.max_prompts_per_chunk = max(1, min(int(max_prompts_per_chunk), 32))
+        if self.max_prompts_per_chunk != 1:
+            raise ValueError("The current provider protocol requires one prompt per chunk")
 
     def slice_task(self, task_id: str, prompts: list[str], model_name: str,
                    model_file: str, model_sha256: str, replicas: int = 1,
@@ -41,7 +43,9 @@ class TaskSlicer:
         for offset in range(0, len(prompts), self.max_prompts_per_chunk):
             group = prompts[offset:offset + self.max_prompts_per_chunk]
             index = offset // self.max_prompts_per_chunk
-            payload = json.dumps(group, ensure_ascii=False, separators=(",", ":"))
+            # Match the exact serialized object in orchestrator.create_chunk_swarm
+            # so the manifest and transferred-byte hashes describe one payload.
+            payload = json.dumps({"prompt": group[0]}, ensure_ascii=False, separators=(",", ":"))
             content_hash = hashlib.sha256(payload.encode("utf-8")).hexdigest()
             chunks.append({
                     "chunk_id": f"{task_id}-chunk-{index}",

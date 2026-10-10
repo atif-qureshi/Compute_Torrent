@@ -1,0 +1,10 @@
+FROM python:3.10-slim
+
+WORKDIR /app
+COPY backend/requirements.txt ./requirements.txt
+RUN pip install --no-cache-dir --timeout 180 --retries 10 -r requirements.txt
+COPY backend/app/ ./app/
+COPY backend/modules/ ./modules/
+ENV COMPUTETORRENT_MODULE_ROOT=/app
+EXPOSE 8001
+CMD ["python", "app/main.py"]

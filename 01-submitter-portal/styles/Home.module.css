@@ -362,6 +362,7 @@
 .chunkRow, .ledgerRow { display: grid; grid-template-columns: 34px minmax(140px, 1fr) 100px minmax(150px, .8fr); gap: 12px; align-items: center; border-bottom: 1px solid #202a3e; padding: 12px 5px; color: #aebbd1; font-size: 11px; }
 .auditEvidence { grid-column: 1 / -1; color: #9bb5d5; font-size: 11px; }
 .auditEvidence summary { cursor: pointer; }
+.chunkFailure { grid-column: 2 / -1; color: #ff9b9b; line-height: 1.5; overflow-wrap: anywhere; }
 .ledgerRow { grid-template-columns: minmax(220px, 1fr) 90px 180px; }
 .ledgerRow strong, .ledgerRow small { display: block; }
 .ledgerRow small { color: #8191ad; margin-top: 5px; }
@@ -377,6 +378,16 @@
 .loginCard > p { color: #9ba9c2; line-height: 1.6; font-size: 13px; margin: 10px 0 24px; }
 .loginCard .form { gap: 18px; }
 .loginPage > p { color: #aab6d0; }
+.formHint { color: #8392ac; font-size: 11px; line-height: 1.45; }
+.privacyNote { padding: 12px 14px; border: 1px solid #4a3b25; border-radius: 9px; background: #201b14; color: #d2c19e; font-size: 11px; line-height: 1.55; }
+.privacyNote strong { color: #f2d18f; }
+.networkAddress { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px; border: 1px solid #2b3852; border-radius: 9px; background: #0c1220; }
+.networkAddress code { min-width: 0; overflow-wrap: anywhere; color: #a9c6ff; font-size: 11px; }
+.setupSteps { color: #aab8d1; padding-left: 20px; font-size: 11px; line-height: 1.75; }
+.setupSteps code { color: #c5d4ef; overflow-wrap: anywhere; }
+.workerRow button:disabled { opacity: .5; cursor: not-allowed; }
+.error button { margin-left: 8px; color: #ffd1d4; border: 1px solid #7c414b; border-radius: 6px; padding: 5px 8px; background: transparent; cursor: pointer; }
+.buttonSecondary { cursor: pointer; }
 
 @media (max-width: 920px) {
   .workspaceGrid { grid-template-columns: 1fr; }
@@ -392,6 +403,7 @@
   .statCard { padding: 13px; }
   .statCard strong { font-size: 24px; }
   .sectionHeading { align-items: flex-start; }
+  .networkAddress { align-items: flex-start; flex-direction: column; }
   .chunkRow { grid-template-columns: 24px 1fr 75px; }
   .chunkRow small { grid-column: 2 / -1; }
   .ledgerRow { grid-template-columns: 1fr 60px; }

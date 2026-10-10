@@ -1,92 +1,55 @@
-# ComputeTorrent — Volunteer Computing MVP
+# ComputeTorrent
 
-Decentralized P2P distributed computing on idle consumer computers, using a torrent-style **Seeder (provider) and Leecher (requestor)** model. The MVP workload is batch LLM inference.
+ComputeTorrent coordinates volunteer computers to run independent LLM inference jobs. A requestor submits prompts in the portal; the coordinator splits them into chunks, sends prompt/model files through private WebTorrent swarms, assigns work to providers, checks returned outputs, and records results and demo credits.
 
-This repository started as a planning blueprint and now includes an executable MVP implementation for LLM inference, WebTorrent transfer, distributed prompt slicing and replica verification, credits/history, and Windows seeder packaging. See [IMPLEMENTATION-SETUP.md](IMPLEMENTATION-SETUP.md) for the deploy and operator workflow. Research and roadmap modules may still be planning-only; the implementation guide records current scope and operational limits.
+## Local development
 
-## Where the ideas come from
+This project is intended to run locally or across a trusted LAN while it is being developed. No domain or public deployment is required.
 
-| Source | Used for |
+1. Copy `.env.example` to `.env` and replace every secret placeholder with private values.
+2. Start Docker Desktop and run `docker compose -f docker-compose.local.yml up --build -d` from this folder.
+3. Open `http://localhost:3000` and sign in with the password from `COMPUTETORRENT_PORTAL_PASSWORD`.
+4. Register an operator-approved GGUF model after the stack is running:
+
+   ```powershell
+   python orchestrator/app/register_model.py qwen-small D:\models\model.gguf --label "Qwen small"
+   ```
+
+5. Build the provider package with `08-provider-node/05-desktop-app-shell/build_installer.ps1`. Install it on this PC or other trusted LAN computers and connect them to the coordinator's private WebSocket address.
+
+The stack and provider workflow are documented in [IMPLEMENTATION-SETUP.md](IMPLEMENTATION-SETUP.md). The local infrastructure scripts are in `infrastructure/`.
+
+## Implemented MVP features
+
+- GGUF inference through llama.cpp in a network-disabled, resource-limited Docker container. Model and adapter files are hash-checked before use; model weights must be supplied by the operator.
+- Per-task private WebTorrent transfers for prompts and models, with SHA-256 checks and provider-side progress reporting.
+- Independent prompt slicing, WS-RR and CC-BP provider selection, strict replica-output agreement, operator-supplied known-answer canary jobs, and limited VeriLLM-inspired Merkle transcript receipts.
+- Portal task submission, task history, verified results, download, and requestor credit ledger pages.
+- Windows provider app, enrollment, resource controls, local work history, and PyInstaller packaging scripts.
+- Local Compose setup for the portal, coordinator, swarm service, and PostgreSQL, with loopback defaults and optional trusted-LAN bindings.
+
+## Architecture and source trees
+
+The numbered modules are the canonical implementation. The separately requested `backend/`, `frontend/`, and `desktop/` folders are independent copies derived from those modules; changes in one tree do not automatically update the other. `docker/docker-compose.yml` builds the standalone backend and frontend copies, while `docker-compose.local.yml` builds the canonical numbered modules. Choose one Compose stack at a time because they share local ports and container names.
+
+| Path | Role |
 |---|---|
-| `docs/source/requirements-seeder-and-portal.md` | the flow and the seeder app, portal and message contracts (requirement IDs HP, NC, DS, WT, APP, WP, NFR) |
-| Project Concept (leecher/seeder, decomposition, reassembly, fault tolerance, credits) | the overall model |
-| Research proposal | verification layers, credits, versioning, evaluation method, scope exclusions |
+| `01-submitter-portal/` | Canonical Next.js requestor portal |
+| `orchestrator/` | Canonical FastAPI coordinator and model registration |
+| `04-task-slicer-scheduler/` | Prompt chunking and scheduling metadata |
+| `06-verification-engine/` | MVP hash, replica, canary, and transcript receipt checks; full VeriLLM/canary trust architecture is future work |
+| `07-network-layer/` | WebTorrent file transfer plus a separate libp2p LAN discovery/relay overlay |
+| `08-provider-node/` | Canonical provider desktop app and packaging |
+| `backend/`, `frontend/`, `desktop/` | Separate rebuilt application trees |
+| `infrastructure/`, `docker/` | Local stack helpers and separate Compose/Docker files |
+| `docs/` | Architecture, flow, contracts, decisions, and research notes |
 
-Builder: **one developer builds everything**, so the parts the requirements document treats as another owner's black boxes (coordination server, slicer, verification) are real modules here.
+## Limits to keep clear
 
-## 1. What the MVP must prove
-
-*A user installs the Seeder app, the app detects hardware, connects to the network, receives a task, runs it inside an isolated Docker container, and returns a result without risking the user's files. Then, many seeders do this together: a requestor submits a task, it is sliced, spread over per-task private swarms, verified without blockchain, reassembled into one result, providers earn credits, and we measure speedup against a single node.*
-
-## 2. MVP scope cut
-
-| Priority | Included |
-|---|---|
-| MUST | Seeder desktop app (profiling, networking client, Docker sandbox, WebTorrent sync, app shell), coordination server with registry, one scheduling mode, slicer and reassembly, canary verification, replica comparison (SERENE-lite), credits, model version manifest, benchmark harness (1, 2, 4 seeders), portal (basic) |
-| SHOULD | Second scheduling mode, VeriLLM-lite audit, churn-aware allocator with availability score, STUN/WebRTC upgrade, live Socket.io dashboard polish |
-| LATER | libp2p DHT and Circuit Relay, privacy levels beyond a label, ZSTD tuning, microbatching, requestor-side desktop app, real GPU scale tests |
-| OUT OF SCOPE | Blockchain, crypto, real money, TEE, full-scale training, non-NVIDIA GPUs, data centers |
-
-CPU-first: a small model on CPU proves the pipeline; GPU and Tier-1 paths are detected at runtime.
-
-## 3. Folder map (one README per functionality)
-
-| # | Folder | Functionality |
-|---|---|---|
-| 01 | `01-submitter-portal/` | Requestor web portal: task form, live dashboard, results, history |
-| 02 | `02-orchestrator-api/` | **Coordination Server** (Tracker/Relay + logic): WebSocket gateway, lifecycle, registry |
-| 03 | `03-database/` | PostgreSQL schema, migrations, data ownership |
-| 04 | `04-task-slicer-scheduler/` | Difficulty analysis, mode selector, chunking, manifests |
-| 05 | `05-allocator-churn/` | Tier, memory and churn-aware allocation, reassignment |
-| 06 | `06-verification-engine/` | Canary Trap, SERENE-lite, VeriLLM-lite |
-| 07 | `07-network-layer/` | Per-task private WebTorrent swarms, connectivity, teardown |
-| 08 | `08-provider-node/` | **Seeder desktop app** (index README plus five sub-modules below) |
-| 08.01 | `08-provider-node/01-hardware-profiling/` | GPU, VRAM, CUDA, RAM detection, capability tier (HP) |
-| 08.02 | `08-provider-node/02-networking-client/` | WebSocket register, heartbeat, messages, reconnect (NC) |
-| 08.03 | `08-provider-node/03-docker-sandbox/` | Fresh disposable container per task (DS) |
-| 08.04 | `08-provider-node/04-webtorrent-sync/` | Join swarm, download, verify, resume, leave (WT) |
-| 08.05 | `08-provider-node/05-desktop-app-shell/` | UI, onboarding, tray, pause, installer (APP) |
-| 09 | `09-incentives-credits/` | BOINC-style credits, trust, priority |
-| 10 | `10-model-versioning/` | Model, adapter, benchmark version tracking |
-| 11 | `11-evaluation-benchmark/` | Single-node vs P2P experiments and metrics |
-| 12 | `12-testing-validation/` | Test strategy, fault injection, demo acceptance |
-
-Cross-cutting docs:
-- `docs/FLOW.md` — end-to-end flow (Sara and Ali example), failure flows, state machines
-- `docs/APPLICATIONS.md` — the applications you build and how they connect
-- `docs/CONTRACTS.md` — messages and data shapes shared by all modules
-- `docs/REQUIREMENTS-TRACEABILITY.md` — every requirement ID mapped to a module and phase
-- `docs/DEPENDENCIES.md` — module and technology dependency maps
-- `docs/BUILD-ORDER.md` — solo build plan, milestones, cut order
-- `docs/RISKS-AND-DECISIONS.md` — decisions taken, new risks, open questions, proposal inconsistencies
-- `docs/source/requirements-seeder-and-portal.md` — the original requirements document
-- `docker/README.md` — local Docker stack: PostgreSQL 18 now, server image ready for when its code exists
-
-## 4. Suggested repository layout (when you start coding)
-
-```
-computetorrent/
-  portal/            (Next.js + TypeScript)                  -> 01
-  server/            (FastAPI coordination server)           -> 02, 04, 05, 06, 09, 10
-  swarm/             (Node.js WebTorrent swarm service)      -> 07
-  db/                (Alembic migrations)                    -> 03
-  seeder-app/        (Python + CustomTkinter)                -> 08.01, 08.02, 08.05
-    sandbox/         (Docker runner and image)               -> 08.03
-    sync-helper/     (Node.js WebTorrent helper)              -> 08.04
-  mock-server/       (fake server for early seeder work)     -> docs/BUILD-ORDER.md phase 0
-  bench/             (experiment harness)                    -> 11
-  tests/                                                     -> 12
-  docker/            (compose, env, db init, server image)   -> 03, 02
-  docs/
-```
-
-Note: the Dockerfile in `docker/orchestrator/` expects the server code under `orchestrator/`; if you use the folder name `server/` above, change the paths in that Dockerfile and in `docker-compose.yml`.
-
-## 5. Reading order
-
-1. `docs/FLOW.md` to see the whole system running
-2. `docs/APPLICATIONS.md` to see what you are building
-3. `docs/CONTRACTS.md` to fix the shared language
-4. `docs/BUILD-ORDER.md` and `docs/DEPENDENCIES.md` to plan the work
-5. `docs/REQUIREMENTS-TRACEABILITY.md` when checking requirement coverage
-6. Module READMEs when you start each module
+- This is an MVP for independent prompt batches, not distributed training or splitting a single model across machines.
+- WebTorrent currently transfers model and prompt files through configured WebRTC tracker signalling. The libp2p LAN overlay supports discovery/relay connectivity only; trackerless libp2p file transfer remains future architecture work.
+- Replica agreement, separate operator-supplied known-answer canary jobs, and output transcript receipts are limited MVP checks. Full VeriLLM/canary verification—including hidden-state checks, robust challenge/incentive design, and dispute handling—remains future architecture work, not a simulated feature.
+- Exact-output comparison may reject valid outputs across different runtimes or hardware. A single provider does not provide replica agreement.
+- Credits are demo accounting with no monetary value. The portal currently has a single operator login and a fixed requestor account.
+- Model weights are not included. Their license, provenance, size, and suitability are the operator's responsibility.
+- See [implementation status](docs/IMPLEMENTATION-STATUS.md) for a concise boundary between working components and future architecture work.

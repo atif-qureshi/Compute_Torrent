@@ -2,8 +2,10 @@
 
 import os
 import shutil
+from PyInstaller.utils.hooks import collect_all
 
 block_cipher = None
+ctk_datas, ctk_binaries, ctk_hiddenimports = collect_all('customtkinter')
 node_binary = shutil.which('node.exe') or shutil.which('node')
 if not node_binary:
     raise RuntimeError('Node.js is required to bundle WebTorrent support')
@@ -19,11 +21,12 @@ bundle_datas.extend([
     (os.path.join(sync_src, 'libp2p_network.mjs'), 'webtorrent'),
     (os.path.join(sync_module, 'node_modules'), 'webtorrent/node_modules'),
 ])
+bundle_datas.extend(ctk_datas)
 
 a = Analysis(
     ['production_seeder.py'],
     pathex=['.', sync_src],
-    binaries=[(node_binary, '.')],
+    binaries=[(node_binary, '.')] + ctk_binaries,
     datas=bundle_datas,
     hiddenimports=[
         'inference_runtime',
@@ -32,7 +35,7 @@ a = Analysis(
         'psutil',
         'websockets',
         'asyncio',
-    ],
+    ] + ctk_hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

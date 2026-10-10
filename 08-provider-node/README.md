@@ -1,61 +1,29 @@
-# 08 — Provider (Seeder) Desktop Application
+# 08 — Provider desktop application
 
-## Purpose
-The installable desktop app donors run on their PC. It detects hardware, joins the network, receives a task, runs it safely inside an isolated Docker container, and returns the result, without ever putting the user's files or system at risk.
+The Windows provider app lets a volunteer PC enroll with the local coordinator, advertise its hardware profile, accept inference work, execute it in a Docker sandbox, and report the result.
 
-MVP goal sentence (from the requirements): *a user installs the Seeder app, the app detects hardware, connects, receives a task, runs it in an isolated container, and returns the result.*
+## Current provider flow
 
-## Sub-modules (one README each)
-| Folder | Functionality | Requirement IDs |
-|---|---|---|
-| `01-hardware-profiling/` | detect GPU, VRAM, CUDA, CPU, RAM; assign capability tier | HP-1 to HP-5 |
-| `02-networking-client/` | WebSocket register, heartbeat, task messages, STUN/WebRTC, reconnect | NC-1 to NC-6 |
-| `03-docker-sandbox/` | fresh disposable container per task, limits, no network, destroy | DS-1 to DS-6 |
-| `04-webtorrent-sync/` | join per-task private swarm, download, verify, resume, leave | WT-1 to WT-5 |
-| `05-desktop-app-shell/` | UI, onboarding, tray, pause, packaging, Docker-missing flow | APP-1 to APP-6 |
+Install the packaged app -> review hardware/Docker readiness -> enter the coordinator WebSocket URL and one-time join code -> enroll with a unique provider credential -> heartbeat -> receive an independent prompt assignment -> download the model/chunk over WebTorrent -> verify SHA-256 -> run llama.cpp inside a network-disabled Docker container -> submit result over WebSocket -> receive verification verdict and demo credits.
 
-Non-functional requirements NFR-1 to NFR-5 apply to all five (see `docs/REQUIREMENTS-TRACEABILITY.md`).
+Use `127.0.0.1` only on the coordinator PC. Other trusted-LAN computers must use the coordinator's private IP. The provider's libp2p peer joins the LAN discovery/relay overlay; model and prompt files still use WebTorrent tracker signalling. Trackerless libp2p file transfer remains future work.
 
-## How the pieces connect
-```
-Hardware profiling --> Networking client <==WebSocket==> Coordination server (02)
-                            |
-                            v
-                   Task receiver / dispatcher (app shell)
-                      |                      |
-                      v                      v
-           WebTorrent sync  ---chunk--->  Docker sandbox
-          (private task swarm)             (isolated run)
-                                              |
-                          result via Networking client --> server
-```
+## Submodules
 
-## Seeder lifecycle
-Install -> first run (profile, tier, onboarding) -> "Start Seeding" -> register and heartbeat -> idle -> `task_assign` -> `queued` -> `downloading` (swarm) -> `running` (sandbox) -> `result_submit` -> `completed` -> leave swarm, destroy container, clean workspace -> update local stats -> idle.
+| Folder | Current role |
+|---|---|
+| `01-hardware-profiling/` | Detect CPU, RAM, NVIDIA GPU/VRAM, CUDA, and Docker readiness. |
+| `02-networking-client/` | Provider enrollment, WebSocket heartbeat/messages, and reconnect. |
+| `03-docker-sandbox/` | Inference runtime and disposable container isolation. |
+| `04-webtorrent-sync/` | WebTorrent file download and SHA-256 validation; also includes the separate libp2p LAN peer helper. |
+| `05-desktop-app-shell/` | CustomTkinter onboarding/dashboard, resource caps, pause, local contribution history, PyInstaller packaging. |
 
-## Hard invariants
-1. No task ever runs outside the Docker sandbox (APP-6).
-2. Nothing from a task survives on the host after it finishes (DS-4, acceptance criteria).
-3. The app never reads or writes outside its own working directory on the host (NFR-1).
-4. Idle resource use stays minimal (NFR-4).
+## Current limits
 
-## Dependencies
-- Needs: contracts in docs/CONTRACTS.md, the coordination server (or its mock) from module 02, swarm protocol from 07.
-- Tech: Python, psutil, pynvml (nvidia-ml-py), CustomTkinter (or PyQt), Docker Engine plus NVIDIA Container Toolkit (GPU), a bundled Node.js WebTorrent helper, PyInstaller for a single `.exe`.
-- Used by: 05 (profiles, tiers), 06 (producer of results), 09 (credits display).
+- Docker Desktop is a prerequisite; the app does not install it or run as a Windows service/tray app.
+- Model weights remain cached under `%LOCALAPPDATA%\ComputeTorrent\models`; per-task prompt/inference workspaces are cleaned after use. Do not describe the provider as leaving no model files on disk.
+- The app stores its per-device credential and short contribution history locally. The shared enrollment code is memory-only.
+- Credits are demo accounting, not redeemable value.
+- Full trackerless libp2p data transfer and full VeriLLM/canary verification are future architecture work.
 
-## Build order inside this module (from the requirements)
-1. 01 hardware profiling (testable alone)
-2. 03 Docker sandbox with a dummy script
-3. 02 networking client against the mock server
-4. 04 WebTorrent sync with a test swarm
-5. 05 app shell wiring everything, then packaging
-
-## Acceptance (module level)
-- Install on a clean Windows PC (Docker present) and reach "Online" without manual steps beyond the installer.
-- Correct hardware and tier shown in plain language.
-- A test task is received, run inside a container, result returned, and no task files remain.
-- UI shows live status while idle and while processing.
-
-## Out of scope
-Auto-update, non-NVIDIA GPU acceleration, macOS and Linux installers (future work).
+See [desktop app flow](05-desktop-app-shell/README.md), [network transfer status](../07-network-layer/README.md), and [implementation status](../docs/IMPLEMENTATION-STATUS.md).
