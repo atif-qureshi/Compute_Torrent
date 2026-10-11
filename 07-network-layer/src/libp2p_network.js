@@ -3,6 +3,7 @@ import { tcp } from "@libp2p/tcp";
 import { noise } from "@libp2p/noise";
 import { yamux } from "@chainsafe/libp2p-yamux";
 import { identify } from "@libp2p/identify";
+import { ping } from "@libp2p/ping";
 import { kadDHT, removePublicAddressesMapper } from "@libp2p/kad-dht";
 import { circuitRelayServer, circuitRelayTransport } from "@libp2p/circuit-relay-v2";
 import { bootstrap } from "@libp2p/bootstrap";
@@ -24,6 +25,7 @@ export async function createRelayNode({ port = 9100, advertiseHost = "127.0.0.1"
     streamMuxers: [yamux()],
     services: {
       identify: identify(),
+      ping: ping(),
       dht: dht(false),
       circuitRelay: circuitRelayServer({ maxReservations: 500 }),
     },
@@ -45,7 +47,7 @@ export async function joinRelayNetwork(bootstrapAddress) {
     connectionEncrypters: [noise()],
     streamMuxers: [yamux()],
     peerDiscovery,
-    services: { identify: identify(), dht: dht(true) },
+    services: { identify: identify(), ping: ping(), dht: dht(true) },
   });
   if (bootstrapAddress) {
     try { await node.dial(multiaddr(bootstrapAddress)); } catch (error) {

@@ -6,7 +6,7 @@ Know what the donor's PC can do and turn it into a profile and a capability tier
 ## Requirements
 | ID | Requirement | How we meet it |
 |---|---|---|
-| HP-1 | On launch detect GPU model, VRAM, CUDA availability, CPU cores, total RAM | pynvml for NVIDIA GPU, psutil for CPU/RAM |
+| HP-1 | On launch detect GPU model, VRAM, CUDA availability, CPU cores, total RAM | NVML or `nvidia-smi` for NVIDIA/VRAM/CUDA; Windows display-adapter enumeration also reports AMD/Intel GPUs for CPU-mode work; psutil for CPU/RAM |
 | HP-2 | Build `Node Profile` in the exact shape `{GPU, VRAM, CUDA, RAM}` | Base object exactly this; CPU cores and Docker status added as separate extension fields |
 | HP-3 | Tier-1 if VRAM at least 8 GB (LLM inference, LoRA); Tier-2 otherwise (preprocessing, light work) | Local rule, applied before registering |
 | HP-4 | Re-check on restart and on manual "Refresh" | Profile is recomputed, never cached across launches |
@@ -20,7 +20,7 @@ Know what the donor's PC can do and turn it into a profile and a capability tier
 ## Edge cases to decide
 | Case | Handling |
 |---|---|
-| No NVIDIA GPU or no driver | GPU = none, VRAM = 0, CUDA = false, Tier-2 |
+| No NVIDIA GPU or NVIDIA driver | Detect Windows AMD/Intel adapters when present; report VRAM as unknown and CUDA = false; use Tier-2 CPU inference |
 | Several GPUs | Use the one with most VRAM for the profile; note count in extension field |
 | VRAM units | Report whole gigabytes (for example 12); tier test uses the value reported by the driver |
 | pynvml fails to load | Fall back to Tier-2 and show a helpful message instead of crashing |

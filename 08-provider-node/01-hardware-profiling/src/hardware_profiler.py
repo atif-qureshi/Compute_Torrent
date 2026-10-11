@@ -1,5 +1,8 @@
 ﻿import subprocess
-import psutil  
+import csv
+import json
+import sys
+import psutil
 from typing import Dict, Optional, Tuple
 from dataclasses import dataclass
 
@@ -33,23 +36,57 @@ class HardwareProfiler:
             return False
     
     def detect_gpu(self):
-        if not self.pynvml_available:
-            return None, 0, False, 0
+        nvidia_devices = []
+        if self.pynvml_available:
+            try:
+                for index in range(self.pynvml.nvmlDeviceGetCount()):
+                    handle = self.pynvml.nvmlDeviceGetHandleByIndex(index)
+                    name = self.pynvml.nvmlDeviceGetName(handle)
+                    if isinstance(name, bytes):
+                        name = name.decode("utf-8", errors="replace")
+                    memory = self.pynvml.nvmlDeviceGetMemoryInfo(handle)
+                    nvidia_devices.append((str(name), memory.total // (1024 ** 3)))
+            except Exception:
+                nvidia_devices = []
+        if nvidia_devices:
+            names = list(dict.fromkeys(name for name, _ in nvidia_devices))
+            return ", ".join(names), max(vram for _, vram in nvidia_devices), True, len(nvidia_devices)
+
+        # Use NVIDIA's CLI when pynvml isn't available, then enumerate Windows
+        # display adapters to include AMD/Intel GPUs as CPU-inference workers.
         try:
-            count = self.pynvml.nvmlDeviceGetCount()
-            if count == 0:
-                return None, 0, False, 0
-            best_gpu, max_vram = None, 0
-            for i in range(count):
-                handle = self.pynvml.nvmlDeviceGetHandleByIndex(i)
-                name = self.pynvml.nvmlDeviceGetName(handle)
-                mem = self.pynvml.nvmlDeviceGetMemoryInfo(handle)
-                vram_gb = mem.total // (1024 ** 3)
-                if vram_gb > max_vram:
-                    max_vram, best_gpu = vram_gb, name
-            return best_gpu, max_vram, True, count
-        except:
-            return None, 0, False, 0
+            result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                devices = [(row[0].strip(), int(float(row[1].strip())) // 1024)
+                           for row in csv.reader(result.stdout.splitlines()) if len(row) >= 2]
+                if devices:
+                    names = list(dict.fromkeys(name for name, _ in devices))
+                    return ", ".join(names), max(vram for _, vram in devices), True, len(devices)
+        except (OSError, subprocess.SubprocessError, ValueError):
+            pass
+
+        if sys.platform == "win32":
+            try:
+                command = (
+                    "$ErrorActionPreference='Stop'; Get-CimInstance Win32_VideoController | "
+                    "Where-Object { $_.Name -and $_.Name -notmatch 'Microsoft Basic|Remote Display|Virtual Display' } | "
+                    "Select-Object -ExpandProperty Name | ConvertTo-Json -Compress"
+                )
+                result = subprocess.run(["powershell.exe", "-NoProfile", "-Command", command],
+                                        capture_output=True, text=True, timeout=8)
+                if result.returncode == 0 and result.stdout.strip():
+                    names = json.loads(result.stdout)
+                    if isinstance(names, str):
+                        names = [names]
+                    names = list(dict.fromkeys(name.strip() for name in names if isinstance(name, str) and name.strip()))
+                    if names:
+                        return ", ".join(names), 0, False, len(names)
+            except (OSError, subprocess.SubprocessError, ValueError, TypeError):
+                pass
+        return None, 0, False, 0
     
     def detect_ram(self):
         return psutil.virtual_memory().total // (1024 ** 3)
@@ -75,7 +112,9 @@ class HardwareProfiler:
                        docker_ok=self.check_docker())
         tier = self.assign_tier(vram)
         if p.GPU:
-            summary = f"GPU: {p.GPU}, {p.VRAM}GB VRAM -> Tier {tier}"
+            vram = f", {p.VRAM}GB NVIDIA VRAM" if p.VRAM else ", VRAM not reported"
+            backend = "CUDA available" if p.CUDA else "CPU inference (no CUDA)"
+            summary = f"GPU: {p.GPU}{vram} -> {backend}, Tier {tier}"
         else:
             summary = f"No GPU -> Tier {tier} (CPU only)"
         return ProfileResult(p, tier, summary)

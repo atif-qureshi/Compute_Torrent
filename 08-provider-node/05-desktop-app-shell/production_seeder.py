@@ -3,6 +3,7 @@ import asyncio
 import threading
 import psutil
 import subprocess
+import csv
 import websockets
 import json
 import time
@@ -95,24 +96,63 @@ class ComputeTorrentSeeder(ctk.CTk):
         """Detect system hardware"""
         ram_gb = psutil.virtual_memory().total // (1024 ** 3)
         cpu_cores = psutil.cpu_count() or 1
-        
-        # GPU detection
+
+        # NVIDIA's driver reports CUDA-capable devices and dedicated VRAM.
         gpu = None
         vram = 0
         cuda = False
-        
+        gpu_count = 0
+        gpu_devices = []
         try:
             result = subprocess.run(
                 ['nvidia-smi', '--query-gpu=name,memory.total', '--format=csv,noheader,nounits'],
                 capture_output=True, text=True, timeout=5
             )
             if result.returncode == 0 and result.stdout.strip():
-                parts = result.stdout.strip().split(',')
-                gpu = parts[0].strip()
-                vram = int(float(parts[1].strip()))
+                for row in csv.reader(result.stdout.splitlines()):
+                    if len(row) < 2:
+                        continue
+                    try:
+                        memory_mib = int(float(row[1].strip()))
+                    except ValueError:
+                        memory_mib = 0
+                    gpu_devices.append({"name": row[0].strip(), "vram_mib": memory_mib, "vendor": "NVIDIA"})
+                gpu_count = len(gpu_devices)
+                vram = max((device["vram_mib"] for device in gpu_devices), default=0)
+                names = list(dict.fromkeys(device["name"] for device in gpu_devices))
+                gpu = ", ".join(names) if names else None
                 cuda = True
         except:
             pass
+
+        # Detect Windows display adapters as well, so AMD/Intel GPUs aren't
+        # mislabeled as absent when they don't expose NVIDIA's CUDA tooling.
+        if not gpu_devices and sys.platform == "win32":
+            try:
+                command = (
+                    "$ErrorActionPreference='Stop'; "
+                    "Get-CimInstance Win32_VideoController | "
+                    "Where-Object { $_.Name -and $_.Name -notmatch 'Microsoft Basic|Remote Display|Virtual Display' } | "
+                    "Select-Object -ExpandProperty Name | ConvertTo-Json -Compress"
+                )
+                result = subprocess.run(
+                    ["powershell.exe", "-NoProfile", "-Command", command],
+                    capture_output=True, text=True, timeout=8
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    names = json.loads(result.stdout)
+                    if isinstance(names, str):
+                        names = [names]
+                    names = list(dict.fromkeys(name.strip() for name in names if isinstance(name, str) and name.strip()))
+                    if names:
+                        gpu_devices = [{"name": name, "vendor": (
+                            "AMD" if "amd" in name.lower() or "radeon" in name.lower() else
+                            "Intel" if "intel" in name.lower() or "arc" in name.lower() else "Unknown"
+                        )} for name in names]
+                        gpu_count = len(gpu_devices)
+                        gpu = ", ".join(names)
+            except (OSError, subprocess.SubprocessError, ValueError, TypeError):
+                pass
         
         # Docker check
         docker_ok = False
@@ -132,6 +172,8 @@ class ComputeTorrentSeeder(ctk.CTk):
             "GPU": gpu,
             "VRAM": vram,
             "CUDA": cuda,
+            "gpu_count": gpu_count,
+            "gpu_devices": gpu_devices,
             "RAM": ram_gb,
             "cpu_cores": cpu_cores,
             "docker_ok": docker_ok,
@@ -165,8 +207,10 @@ class ComputeTorrentSeeder(ctk.CTk):
 
 💻 CPU: {self.profile['cpu_cores']} cores
 🧠 RAM: {self.profile['RAM']} GB
-🎮 GPU: {self.profile['GPU'] or 'None (CPU mode)'}
-💾 VRAM: {self.profile['VRAM'] / 1024:.1f} GB
+🎮 GPU: {self.profile['GPU'] or 'Not detected (CPU mode)'}
+💾 NVIDIA VRAM: {f"{self.profile['VRAM'] / 1024:.1f} GB" if self.profile['VRAM'] else 'Not reported'}
+🔢 GPU devices: {self.profile.get('gpu_count', 0)}
+⚙️ CUDA: {'Available' if self.profile['CUDA'] else 'Not available (CPU inference)'}
 🐳 Docker: {'✅ Available' if self.profile['docker_ok'] else '❌ Not Available'}
 
 📊 Capability Tier: {self.profile['tier']}
@@ -179,6 +223,9 @@ class ComputeTorrentSeeder(ctk.CTk):
         info_box.pack(pady=20, padx=20)
         info_box.insert("1.0", info_text)
         info_box.configure(state="disabled")
+
+        ctk.CTkButton(frame, text="Refresh hardware profile", command=self.refresh_hardware_profile,
+                      height=36, fg_color="#24344d", hover_color="#314868").pack(pady=(0, 16))
 
         connection_card = ctk.CTkFrame(frame)
         connection_card.pack(fill="x", padx=20, pady=5)
@@ -231,6 +278,23 @@ class ComputeTorrentSeeder(ctk.CTk):
             text=f"Node ID: {self.node_id or 'New provider'} • Orchestrator: {self.orchestrator_url}",
             font=("Courier New", 9), text_color="gray")
         footer.pack(pady=10)
+
+    def refresh_hardware_profile(self):
+        """Re-detect system devices before enrollment."""
+        saved = {
+            "orchestrator_url": self.server_entry.get() if hasattr(self, "server_entry") else self.orchestrator_url,
+            "enrollment_token": self.enrollment_entry.get() if hasattr(self, "enrollment_entry") else "",
+            "cpu_limit": self.cpu_entry.get() if hasattr(self, "cpu_entry") else str(self.cpu_limit),
+            "memory_limit_gb": self.memory_entry.get() if hasattr(self, "memory_entry") else str(self.memory_limit_gb),
+        }
+        self.profile = self.detect_hardware()
+        self.show_onboarding()
+        for field, value in ((self.server_entry, saved["orchestrator_url"]),
+                             (self.enrollment_entry, saved["enrollment_token"]),
+                             (self.cpu_entry, saved["cpu_limit"]),
+                             (self.memory_entry, saved["memory_limit_gb"])):
+            field.delete(0, "end")
+            field.insert(0, value)
     
     def start_connection(self):
         """Start connection to orchestrator"""
@@ -378,6 +442,8 @@ class ComputeTorrentSeeder(ctk.CTk):
                             "GPU": self.profile["GPU"],
                             "VRAM": self.profile["VRAM"],
                             "CUDA": self.profile["CUDA"],
+                            "gpu_count": self.profile["gpu_count"],
+                            "gpu_devices": self.profile["gpu_devices"],
                             "RAM": self.profile["RAM"],
                             "cpu_cores": self.profile["cpu_cores"],
                             "docker_ok": self.profile["docker_ok"]
@@ -599,8 +665,8 @@ class ComputeTorrentSeeder(ctk.CTk):
         metrics_right = ctk.CTkFrame(stats_grid)
         metrics_right.grid(row=2, column=1, sticky="ew", padx=5, pady=5)
         
-ctk.CTkLabel(metrics_right, text="Credits Earned",
-                    font=("Arial", 11, "bold")).pack(pady=5)
+        ctk.CTkLabel(metrics_right, text="Credits Earned",
+                     font=("Arial", 11, "bold")).pack(pady=5)
         self.credits_label = ctk.CTkLabel(metrics_right, text="0", 
                                          font=("Arial", 24, "bold"),
                                          text_color="#4caf50")
@@ -618,6 +684,9 @@ ctk.CTkLabel(metrics_right, text="Credits Earned",
 
 Node ID: {self.node_id or 'Enrolling'}
 Tier: {self.profile['tier']} ({'GPU' if self.profile['tier'] == 1 else 'CPU'})
+GPU: {self.profile['GPU'] or 'None detected'} ({self.profile.get('gpu_count', 0)} device(s))
+NVIDIA VRAM: {f"{self.profile['VRAM'] / 1024:.1f} GB" if self.profile['VRAM'] else 'Not reported'} · CUDA: {'ready' if self.profile['CUDA'] else 'unavailable'}
+Docker: {'ready' if self.profile['docker_ok'] else 'unavailable'}
 Coordinator: {self.orchestrator_url}
 Resource limit: {self.cpu_limit} CPU cores / {self.memory_limit_gb} GB RAM
 Model cache: {self.app_data / 'models'}

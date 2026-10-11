@@ -24,7 +24,7 @@ _MODULE_ROOT = os.getenv("COMPUTETORRENT_MODULE_ROOT", os.path.abspath(os.path.j
 sys.path.insert(0, os.path.join(_MODULE_ROOT, "04-task-slicer-scheduler", "src"))
 sys.path.insert(0, os.path.join(_MODULE_ROOT, "06-verification-engine", "src"))
 from task_slicer import TaskSlicer
-from verification import verify_replicas
+from verification import verify_replicas, verify_verillm_receipt
 
 # Database configuration
 DATABASE_URL = "postgresql://postgres:postgres@localhost:5432/computetorrent"
@@ -550,7 +550,6 @@ async def get_task(task_id: str):
             task = db.query(Task).filter(Task.task_id == task_id).first()
             if not task or task.submitter_id == "__system_canary__":
                 raise HTTPException(status_code=404, detail="Task not found")
-            
             return {
                 "task_id": task.task_id,
                 "status": task.status,
@@ -592,6 +591,35 @@ async def get_task(task_id: str):
                         "failure_reason": c.get("failure_reason")}
                        for c in chunks],
         }
+
+@app.get("/api/verifications/{task_id}/{chunk_id}")
+async def get_verification_receipt(task_id: str, chunk_id: str):
+    """Return a replica receipt and independently recompute its transcript checks."""
+    if DB_AVAILABLE:
+        db = get_db()
+        try:
+            task = db.query(Task).filter(Task.task_id == task_id).first()
+            if not task or task.submitter_id == "__system_canary__":
+                raise HTTPException(status_code=404, detail="Task not found")
+            chunks = task.chunks or []
+        finally:
+            db.close()
+    else:
+        task = MOCK_TASKS.get(task_id)
+        if not task or task.get("submitter_id") == "__system_canary__":
+            raise HTTPException(status_code=404, detail="Task not found")
+        chunks = task.get("chunks", [])
+    chunk = next((item for item in chunks if item.get("chunk_id") == chunk_id), None)
+    if not chunk:
+        raise HTTPException(status_code=404, detail="Chunk not found")
+    verification = chunk.get("verification") or {}
+    receipt = verification.get("verillm_audit")
+    if not receipt:
+        raise HTTPException(status_code=404, detail="Verification receipt is not available yet")
+    return {"task_id": task_id, "chunk_id": chunk_id, "receipt": receipt,
+            "receipt_valid": verify_verillm_receipt(receipt),
+            "verification_status": verification.get("status"),
+            "assurance": receipt.get("assurance")}
 
 @app.get("/api/tasks")
 async def list_tasks(status: Optional[str] = None, limit: int = 50, submitter_id: Optional[str] = None):

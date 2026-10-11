@@ -9,10 +9,8 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: computetorrent
-    ports:
-      - "127.0.0.1:5432:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres_data_v18:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 10s
@@ -84,8 +82,9 @@ services:
       COMPUTETORRENT_PORTAL_PASSWORD: ${COMPUTETORRENT_PORTAL_PASSWORD:?Set COMPUTETORRENT_PORTAL_PASSWORD in .env}
       COMPUTETORRENT_SESSION_SECRET: ${COMPUTETORRENT_SESSION_SECRET:?Set COMPUTETORRENT_SESSION_SECRET in .env}
       COMPUTETORRENT_COOKIE_SECURE: ${COMPUTETORRENT_COOKIE_SECURE:-false}
+      COMPUTETORRENT_PROVIDER_LAN_HOST: ${COMPUTETORRENT_LIBP2P_ADVERTISE_HOST:-127.0.0.1}
     ports:
-      - "${COMPUTETORRENT_BIND_IP:-127.0.0.1}:3000:3000"
+      - "${COMPUTETORRENT_PORTAL_BIND_IP:-127.0.0.1}:3000:3000"
     networks:
       - computetorrent
     restart: unless-stopped
@@ -95,5 +94,5 @@ networks:
     driver: bridge
 
 volumes:
-  postgres_data:
+  postgres_data_v18:
     driver: local

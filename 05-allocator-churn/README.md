@@ -43,6 +43,26 @@ Combine: fraction of time online in last window, average session length, heartbe
 4. Churn reassignment loop.
 5. Decision logging.
 
+## Petals-style model parallelism
+
+The product target is model parallelism, not splitting a prompt batch: each
+peer owns a contiguous range of transformer blocks. The separate runtime in
+[`../08-provider-node/06-petals-runtime/`](../08-provider-node/06-petals-runtime/)
+starts the upstream Petals server/client. Petals performs actual resource-aware
+block placement, throughput measurement, routing, KV caching, and rebalancing.
+The local `layer_planner.py` remains a standalone capacity-planning helper; it
+does not drive Petals or the portal scheduler.
+
+The planner also includes paper-inspired placement/routing primitives:
+`choose_underprovisioned_interval()` selects a contiguous range over the
+lowest-throughput blocks for a joining server, and `choose_low_latency_chain()`
+uses measured client/peer RTT plus per-layer compute time to find a low-cost
+server chain with beam search.
+
+The portal scheduler and provider desktop app do not manage Petals nodes yet.
+The portal's existing `task_assign` handler still runs a complete GGUF model on
+one provider; Petals jobs must be launched through the dedicated runtime.
+
 ## Acceptance checks
 - Killing a worker mid-run results in reassignment and a completed task.
 - Replication triggers for low-u_j workers and not for high-u_j ones.

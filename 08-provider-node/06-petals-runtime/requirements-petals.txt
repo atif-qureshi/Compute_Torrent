@@ -1,0 +1,3 @@
+# Install in a dedicated Python 3.10+ environment. PyTorch must match the
+# provider's CPU/CUDA/ROCm hardware; see the official PyTorch install selector.
+petals @ git+https://github.com/bigscience-workshop/petals.git

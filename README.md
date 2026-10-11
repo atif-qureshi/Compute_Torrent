@@ -23,10 +23,11 @@ The stack and provider workflow are documented in [IMPLEMENTATION-SETUP.md](IMPL
 
 - GGUF inference through llama.cpp in a network-disabled, resource-limited Docker container. Model and adapter files are hash-checked before use; model weights must be supplied by the operator.
 - Per-task private WebTorrent transfers for prompts and models, with SHA-256 checks and provider-side progress reporting.
-- Independent prompt slicing, WS-RR and CC-BP provider selection, strict replica-output agreement, operator-supplied known-answer canary jobs, and limited VeriLLM-inspired Merkle transcript receipts.
+- Independent prompt slicing, WS-RR and CC-BP provider selection, unique-provider replica agreement, private known-answer canary jobs, and challenged VeriLLM-inspired output-report receipts with checkable Merkle proofs.
 - Portal task submission, task history, verified results, download, and requestor credit ledger pages.
 - Windows provider app, enrollment, resource controls, local work history, and PyInstaller packaging scripts.
 - Local Compose setup for the portal, coordinator, swarm service, and PostgreSQL, with loopback defaults and optional trusted-LAN bindings.
+- Separate upstream Petals runtime scripts for serving Transformer blocks across a private or public Petals swarm and generating through distributed peers; it is not yet wired into portal task history.
 
 ## Architecture and source trees
 
@@ -37,18 +38,19 @@ The numbered modules are the canonical implementation. The separately requested 
 | `01-submitter-portal/` | Canonical Next.js requestor portal |
 | `orchestrator/` | Canonical FastAPI coordinator and model registration |
 | `04-task-slicer-scheduler/` | Prompt chunking and scheduling metadata |
-| `06-verification-engine/` | MVP hash, replica, canary, and transcript receipt checks; full VeriLLM/canary trust architecture is future work |
+| `06-verification-engine/` | MVP hash, replica, canary, and challenged transcript receipt checks; full VeriLLM/canary trust architecture is future work |
 | `07-network-layer/` | WebTorrent file transfer plus a separate libp2p LAN discovery/relay overlay |
 | `08-provider-node/` | Canonical provider desktop app and packaging |
+| `08-provider-node/06-petals-runtime/` | Separate real Petals block-server and distributed-generation client |
 | `backend/`, `frontend/`, `desktop/` | Separate rebuilt application trees |
 | `infrastructure/`, `docker/` | Local stack helpers and separate Compose/Docker files |
 | `docs/` | Architecture, flow, contracts, decisions, and research notes |
 
 ## Limits to keep clear
 
-- This is an MVP for independent prompt batches, not distributed training or splitting a single model across machines.
+- The portal's `/api/tasks` workflow remains an MVP for independent prompt batches. A separate upstream Petals runtime can run model-parallel inference but is not yet integrated with portal tasks/history.
 - WebTorrent currently transfers model and prompt files through configured WebRTC tracker signalling. The libp2p LAN overlay supports discovery/relay connectivity only; trackerless libp2p file transfer remains future architecture work.
-- Replica agreement, separate operator-supplied known-answer canary jobs, and output transcript receipts are limited MVP checks. Full VeriLLM/canary verification—including hidden-state checks, robust challenge/incentive design, and dispute handling—remains future architecture work, not a simulated feature.
+- Replica agreement, separate operator-supplied known-answer canary jobs, and checkable challenged output transcript receipts are MVP checks. Full VeriLLM/canary verification—including per-layer hidden-state replay, chain-backed challenges, peer-prediction incentives, and disputes—remains future architecture work, not a simulated feature.
 - Exact-output comparison may reject valid outputs across different runtimes or hardware. A single provider does not provide replica agreement.
 - Credits are demo accounting with no monetary value. The portal currently has a single operator login and a fixed requestor account.
 - Model weights are not included. Their license, provenance, size, and suitability are the operator's responsibility.

@@ -381,6 +381,9 @@
 .formHint { color: #8392ac; font-size: 11px; line-height: 1.45; }
 .privacyNote { padding: 12px 14px; border: 1px solid #4a3b25; border-radius: 9px; background: #201b14; color: #d2c19e; font-size: 11px; line-height: 1.55; }
 .privacyNote strong { color: #f2d18f; }
+.demoPromptButton { align-self: flex-start; color: #a9c6ff; border: 1px solid #35496a; border-radius: 7px; padding: 8px 11px; background: #121d30; font-size: 11px; font-weight: 700; cursor: pointer; }
+.demoPromptButton:hover { background: #1a2a45; border-color: #5a80bb; }
+.commandBlock { overflow-x: auto; margin: 12px 0; padding: 13px 15px; border: 1px solid #2b3852; border-radius: 9px; background: #090e18; color: #a9c6ff; font-size: 11px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
 .networkAddress { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px; border: 1px solid #2b3852; border-radius: 9px; background: #0c1220; }
 .networkAddress code { min-width: 0; overflow-wrap: anywhere; color: #a9c6ff; font-size: 11px; }
 .setupSteps { color: #aab8d1; padding-left: 20px; font-size: 11px; line-height: 1.75; }
