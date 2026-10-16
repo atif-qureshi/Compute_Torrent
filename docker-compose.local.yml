@@ -38,6 +38,8 @@ services:
       COMPUTETORRENT_LLAMA_CUDA_IMAGE: ${COMPUTETORRENT_LLAMA_CUDA_IMAGE:-ghcr.io/ggml-org/llama.cpp:full-cuda}
       COMPUTETORRENT_SWARM_URL: http://swarm:4001
       COMPUTETORRENT_SWARM_DATA: /data
+      COMPUTETORRENT_PETALS_URL: http://petals:8002
+      COMPUTETORRENT_JOB_DATA: /data/distributed
     volumes:
       - ./runtime/swarm:/data
       - ./orchestrator/app/models.json:/app/app/models.json
@@ -64,6 +66,26 @@ services:
       - "${COMPUTETORRENT_LIBP2P_BIND_IP:-127.0.0.1}:9100:9100/tcp"
     expose:
       - "4001"
+    networks:
+      - computetorrent
+    restart: unless-stopped
+
+  petals:
+    build: ./08-provider-node/06-petals-runtime
+    image: computetorrent-petals:local
+    container_name: computetorrent-petals
+    environment:
+      COMPUTETORRENT_API_TOKEN: ${COMPUTETORRENT_API_TOKEN:?Set COMPUTETORRENT_API_TOKEN in .env}
+      PETALS_ADVERTISE_HOST: ${COMPUTETORRENT_LIBP2P_ADVERTISE_HOST:-127.0.0.1}
+      PETALS_JOB_DIR: /jobs
+    volumes:
+      - ./runtime/petals-cache:/cache
+      - ./runtime/petals-jobs:/jobs
+    ports:
+      - "127.0.0.1:8002:8002"
+      - "${COMPUTETORRENT_BIND_IP:-127.0.0.1}:31331:31331/tcp"
+    mem_limit: 6g
+    cpus: 2
     networks:
       - computetorrent
     restart: unless-stopped

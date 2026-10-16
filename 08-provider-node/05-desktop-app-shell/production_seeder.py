@@ -19,6 +19,8 @@ import urllib.error
 from urllib.parse import urlsplit, urlunsplit
 from pathlib import Path
 from inference_runtime import run_inference
+from petals_control import PetalsControl
+from hardware_details import details as hardware_details, gpu_telemetry
 
 _SYNC_SRC = Path(__file__).resolve().parents[1] / "04-webtorrent-sync" / "src"
 sys.path.insert(0, str(_SYNC_SRC))
@@ -82,9 +84,14 @@ class ComputeTorrentSeeder(ctk.CTk):
         self.paused = False
         self.event_loop = None
         self.shutting_down = False
+        self.petals = PetalsControl(self.app_data)
+        self.petals_enabled = bool(self.settings.get("petals_enabled", False))
         
         # Detect hardware
         self.profile = self.detect_hardware()
+        self.profile.update(hardware_details())
+        self.profile.update(self.petals.capabilities())
+        self.profile.update(gpu_telemetry())
         if had_legacy_join_code:
             self.save_settings()
         self.protocol("WM_DELETE_WINDOW", self.close_application)
@@ -259,6 +266,15 @@ class ComputeTorrentSeeder(ctk.CTk):
         self.memory_entry.insert(0, str(self.memory_limit_gb))
         self.connection_error = ctk.CTkLabel(connection_card, text="", text_color="#ff7070")
         self.connection_error.pack(anchor="w", padx=12)
+        self.layer_switch = ctk.CTkSwitch(connection_card, text="Share model layers (Petals · automatic model download)")
+        self.layer_switch.pack(anchor="w", padx=12, pady=12)
+        if self.petals_enabled:
+            self.layer_switch.select()
+        ctk.CTkLabel(connection_card, text="Shares CPU, GPU/VRAM, RAM and disk capacity with this operator. No personal files are scanned.",
+                     wraplength=720, text_color="#9aabc5").pack(anchor="w", padx=12, pady=4)
+        ctk.CTkButton(connection_card, text="Refresh runtime availability", command=self.refresh_hardware_profile).pack(anchor="w", padx=12, pady=10)
+        ctk.CTkLabel(connection_card, text=f"Petals CPU runtime: {'installed' if self.profile.get('petals_image_ready') else 'missing — import the runtime image first'} · CUDA runtime: {'ready' if self.profile.get('petals_cuda_ready') else 'not available'}",
+                     wraplength=720).pack(anchor="w", padx=12, pady=4)
         
         if not self.profile['docker_ok']:
             warning = ctk.CTkLabel(frame, 
@@ -288,6 +304,10 @@ class ComputeTorrentSeeder(ctk.CTk):
             "memory_limit_gb": self.memory_entry.get() if hasattr(self, "memory_entry") else str(self.memory_limit_gb),
         }
         self.profile = self.detect_hardware()
+        self.profile.update(hardware_details())
+        self.profile.update(self.petals.capabilities())
+        self.profile.update(gpu_telemetry())
+        self.petals_enabled = bool(self.layer_switch.get())
         self.show_onboarding()
         for field, value in ((self.server_entry, saved["orchestrator_url"]),
                              (self.enrollment_entry, saved["enrollment_token"]),
@@ -298,6 +318,8 @@ class ComputeTorrentSeeder(ctk.CTk):
     
     def start_connection(self):
         """Start connection to orchestrator"""
+        self.petals_enabled = bool(self.layer_switch.get())
+        self.profile.update(petals_enabled=self.petals_enabled, cpu_limit=self.cpu_limit, memory_limit_gb=self.memory_limit_gb)
         self.orchestrator_url = self.server_entry.get().strip()
         self.enrollment_token = self.enrollment_entry.get().strip()
         parsed = urlsplit(self.orchestrator_url)
@@ -322,6 +344,7 @@ class ComputeTorrentSeeder(ctk.CTk):
 
     def save_settings(self):
         self.settings.update({"node_id": self.node_id, "access_token": self.access_token,
+                              "petals_enabled": self.petals_enabled,
                               "orchestrator_url": self.orchestrator_url,
                               "cpu_limit": self.cpu_limit, "memory_limit_gb": self.memory_limit_gb,
                               "recent_work": self.recent_work[-20:]})
@@ -395,6 +418,7 @@ class ComputeTorrentSeeder(ctk.CTk):
         if self.shutting_down:
             return
         self.shutting_down = True
+        self.petals.stop()
         if self.websocket and self.event_loop and self.event_loop.is_running():
             try:
                 close_future = asyncio.run_coroutine_threadsafe(self.websocket.close(), self.event_loop)
@@ -438,7 +462,7 @@ class ComputeTorrentSeeder(ctk.CTk):
                         "type": "register",
                         "node_id": self.node_id,
                         "tier": self.profile["tier"],
-                        "profile": {
+                        "profile": {**self.profile,
                             "GPU": self.profile["GPU"],
                             "VRAM": self.profile["VRAM"],
                             "CUDA": self.profile["CUDA"],
@@ -492,10 +516,16 @@ class ComputeTorrentSeeder(ctk.CTk):
         self.profile["free_ram_gb"] = round(memory.available / (1024 ** 3), 1)
         self.profile["cpu_load_pct"] = round(psutil.cpu_percent(interval=None), 1)
         self.profile["uptime_seconds"] = int(time.time() - psutil.boot_time())
+        self.profile.update(petals_enabled=self.petals_enabled, memory_limit_gb=self.memory_limit_gb, cpu_limit=self.cpu_limit)
+        self.profile.update(await asyncio.to_thread(gpu_telemetry))
+        self.profile["petals"] = await asyncio.to_thread(self.petals.status, self.is_connected and not self.paused)
+        if hasattr(self, 'layer_label'):
+            text = self.profile['petals']
+            self.after(0, lambda: self.layer_label.configure(text=f"Layers: {text.get('start', '—')}–{text.get('end', '—')} · {text.get('status', 'idle')}"))
         await websocket.send(json.dumps({
             "type": "heartbeat",
             "node_id": self.node_id,
-            "state": "paused" if self.paused else ("busy" if self.current_task else "idle"),
+            "state": "paused" if self.paused else ("busy" if self.current_task or self.petals.job_id else "idle"),
             "profile": self.profile,
         }))
     
@@ -512,6 +542,20 @@ class ComputeTorrentSeeder(ctk.CTk):
                 self.update_credits(self.credits_earned)
                 self.update_status("✅ Registration confirmed!")
             
+            elif msg_type == "petals_start":
+                if self.paused or not self.petals_enabled or self.current_task:
+                    self.profile['petals'] = {'job_id': data.get('job_id'), 'error': 'Layer sharing is disabled or provider is busy'}
+                    await websocket_profile(self)
+                    return
+                try:
+                    await asyncio.to_thread(self.petals.start, data, self.orchestrator_url, self.cpu_limit, self.memory_limit_gb)
+                    self.update_task_info(f"Loading {data['spec']['model_id']} · layers {data['stage']['start']}–{data['stage']['end']}")
+                except Exception as error:
+                    self.profile['petals'] = {'job_id': data.get('job_id'), 'error': str(error)[:500]}
+                    await websocket_profile(self)
+            elif msg_type == "petals_stop":
+                await asyncio.to_thread(self.petals.stop, data.get('job_id'))
+                self.update_task_info("Model layer serving stopped")
             elif msg_type == "task_assign":
                 if self.paused:
                     await self.send_status("failed", data.get("task_id"), "Provider is paused", data.get("chunk_id"))
@@ -625,6 +669,13 @@ class ComputeTorrentSeeder(ctk.CTk):
         title = ctk.CTkLabel(frame, text="🖥️ Provider Dashboard",
                            font=("Arial", 24, "bold"))
         title.pack(pady=15)
+        hardware_card = ctk.CTkFrame(frame, fg_color="#122037", corner_radius=16)
+        hardware_card.pack(fill="x", padx=15, pady=12)
+        ctk.CTkLabel(hardware_card, text=self.profile.get('cpu_model', 'Processor'), font=("Arial", 17, "bold"), wraplength=760).pack(anchor="w", padx=20, pady=(16, 4))
+        ctk.CTkLabel(hardware_card, text=f"{self.profile.get('physical_cores', '—')} physical / {self.profile['cpu_cores']} logical cores · {self.profile['RAM']} GB RAM · {self.profile.get('disk_free_gb', '—')} GB disk free").pack(anchor="w", padx=20, pady=4)
+        ctk.CTkLabel(hardware_card, text=f"{self.profile['GPU'] or 'CPU inference'} · {self.profile['VRAM'] / 1024:.1f} GB VRAM", wraplength=760).pack(anchor="w", padx=20, pady=4)
+        self.layer_label = ctk.CTkLabel(hardware_card, text="Layer sharing enabled · waiting for assignment" if self.petals_enabled else "Layer sharing disabled", text_color="#7ce4bc")
+        self.layer_label.pack(anchor="w", padx=20, pady=(4, 16))
         
         # Stats grid
         stats_frame = ctk.CTkFrame(frame)
@@ -632,6 +683,7 @@ class ComputeTorrentSeeder(ctk.CTk):
         
         stats_grid = ctk.CTkFrame(stats_frame)
         stats_grid.pack(fill="x", padx=10, pady=10)
+        stats_grid.grid_columnconfigure((0, 1), weight=1)
         
         # Status
         status_container = ctk.CTkFrame(stats_grid)
@@ -720,6 +772,8 @@ Credits are demo accounting only and have no cash value.
 
     def toggle_pause(self):
         self.paused = not self.paused
+        if self.paused:
+            self.petals.stop()
         self.pause_btn.configure(text="▶️ Resume contributions" if self.paused else "⏸️ Pause contributions")
         self.update_status("Paused; current task will finish" if self.paused and self.current_task else
                            ("Paused; not accepting tasks" if self.paused else "Resuming network contributions"))
@@ -772,6 +826,11 @@ Credits are demo accounting only and have no cash value.
                 self.after(0, render)
             except RuntimeError:
                 pass
+
+async def websocket_profile(app):
+    if app.websocket:
+        await app.websocket.send(json.dumps({'type': 'heartbeat', 'state': 'paused' if app.paused else 'idle', 'profile': app.profile}))
+
 
 def main():
     app = ComputeTorrentSeeder()

@@ -30,6 +30,8 @@ a = Analysis(
     datas=bundle_datas,
     hiddenimports=[
         'inference_runtime',
+        'petals_control',
+        'hardware_details',
         'webtorrent_client',
         'customtkinter',
         'psutil',

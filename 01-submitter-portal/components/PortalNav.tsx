@@ -7,5 +7,5 @@ export default function PortalNav() {
     await fetch('/api/session', { method: 'DELETE' })
     router.replace('/login')
   }
-  return <nav className={styles.portalNav}><a className={router.pathname === '/' ? styles.activeNav : ''} href="/">Workspace</a><a className={router.pathname === '/history' ? styles.activeNav : ''} href="/history">Task history</a><a className={router.pathname === '/credits' ? styles.activeNav : ''} href="/credits">Credits</a><button type="button" onClick={logout}>Sign out</button></nav>
+  return <nav className={styles.portalNav}><a className={router.pathname === '/inference' ? styles.activeNav : ''} href="/inference">Model Studio</a><a className={router.pathname === '/' ? styles.activeNav : ''} href="/">Workspace</a><a className={router.pathname === '/history' ? styles.activeNav : ''} href="/history">Task history</a><a className={router.pathname === '/credits' ? styles.activeNav : ''} href="/credits">Credits</a><button type="button" onClick={logout}>Sign out</button></nav>
 }

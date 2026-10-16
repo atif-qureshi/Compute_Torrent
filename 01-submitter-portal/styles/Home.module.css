@@ -297,7 +297,7 @@
 .eyebrow { color: #8fa4d4; font-size: 10px; font-weight: 800; letter-spacing: .17em; margin-bottom: 8px; }
 .header .title { text-align: left; font-size: clamp(2.1rem, 4vw, 3.4rem); margin-bottom: 8px; }
 .description { text-align: left; max-width: 720px; margin: 0; font-size: 1rem; color: #aab6d0; }
-.portalNav { align-items: center; gap: 6px; margin: 0; padding: 5px; border: 1px solid #222d46; border-radius: 12px; background: #101625; }
+.portalNav { align-items: center; gap: 6px; margin: 0; padding: 5px; border: 1px solid #222d46; border-radius: 12px; background: #101625; flex-wrap: wrap; }
 .portalNav a { color: #a9b6ce; padding: 10px 13px; border-radius: 8px; font-size: 13px; }
 .portalNav .activeNav { background: #1b2945; color: #fff; }
 .portalNav button { color: #a9b6ce; background: transparent; border: 0; border-left: 1px solid #2a3550; padding: 9px 11px; font-size: 11px; }

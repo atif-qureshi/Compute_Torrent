@@ -1,0 +1,8 @@
+FROM pytorch/pytorch:2.2.2-cuda12.1-cudnn8-runtime
+RUN apt-get update && apt-get install -y --no-install-recommends git build-essential && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+RUN pip install --no-cache-dir 'numpy<2' 'petals @ git+https://github.com/bigscience-workshop/petals.git@22afba627a7eb4fcfe9418c49472c6a51334b8ac'
+ENV HF_HOME=/cache/huggingface PETALS_CACHE=/cache/petals PYTHONUNBUFFERED=1
+COPY gateway.py generate_job.py worker.py ./
+EXPOSE 31330
+CMD ["python", "/app/worker.py"]

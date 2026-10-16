@@ -17,9 +17,9 @@ def build_command(args: argparse.Namespace) -> list[str]:
     command = [sys.executable, "-m", "petals.cli.run_server", args.model]
     if args.swarm_mode == "new":
         command.append("--new_swarm")
-    elif args.initial_peers:
+    elif args.swarm_mode == "join" and args.initial_peers:
         command.extend(["--initial_peers", *args.initial_peers])
-    else:
+    elif args.swarm_mode == "join":
         raise ValueError("Joining a private swarm requires at least one --initial-peer multiaddr")
     command.extend(["--port", str(args.port), "--device", args.device,
                     "--torch_dtype", args.dtype, "--compression", args.compression,
@@ -51,9 +51,6 @@ def main() -> int:
     parser.add_argument("--update-period", type=int, default=120)
     args = parser.parse_args()
 
-    if args.swarm_mode == "public":
-        args.swarm_mode = "join"
-        args.initial_peers = []
     if args.device == "auto":
         args.device = "cuda" if os.environ.get("CUDA_VISIBLE_DEVICES", "") not in {"", "-1"} else "cpu"
         try:
@@ -63,6 +60,10 @@ def main() -> int:
             pass
     if shutil.which(sys.executable) is None:
         raise SystemExit(f"Python executable not found: {sys.executable}")
+    if args.device == "cpu" and args.num_blocks is None:
+        parser.error("CPU servers require --num-blocks to respect available RAM")
+    if args.device == "cpu" and args.dtype == "auto":
+        args.dtype = "float32"
     try:
         command = build_command(args)
     except ValueError as error:

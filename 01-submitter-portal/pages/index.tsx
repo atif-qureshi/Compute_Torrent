@@ -182,7 +182,7 @@ export default function Home() {
     <main className={styles.main}>
       <header className={styles.header}>
         <div><div className={styles.eyebrow}>LOCAL VOLUNTEER COMPUTE</div><h1 className={styles.title}>ComputeTorrent</h1>
-          <p className={styles.description}>Submit independent AI jobs to connected worker PCs. Follow execution, verification, results, and demo credits from one local workspace.</p></div>
+          <p className={styles.description}>Your volunteer compute workspace. Open <a href="/inference">Model Studio</a> to upload JSON/XML and split a small model across connected PCs, or submit independent GGUF jobs below.</p></div>
         <PortalNav />
       </header>
 

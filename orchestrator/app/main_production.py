@@ -337,6 +337,9 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
+from distributed import install as install_distributed
+install_distributed(app, manager)
+
 # Helper functions
 def get_db():
     if DB_AVAILABLE:
