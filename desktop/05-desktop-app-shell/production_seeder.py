@@ -1,8 +1,9 @@
-﻿import customtkinter as ctk
+import customtkinter as ctk
 import asyncio
 import threading
 import psutil
 import subprocess
+import csv
 import websockets
 import json
 import time
@@ -18,6 +19,8 @@ import urllib.error
 from urllib.parse import urlsplit, urlunsplit
 from pathlib import Path
 from inference_runtime import run_inference
+from petals_control import PetalsControl
+from hardware_details import details as hardware_details, gpu_telemetry
 
 _SYNC_SRC = Path(__file__).resolve().parents[1] / "04-webtorrent-sync" / "src"
 sys.path.insert(0, str(_SYNC_SRC))
@@ -81,9 +84,15 @@ class ComputeTorrentSeeder(ctk.CTk):
         self.paused = False
         self.event_loop = None
         self.shutting_down = False
+        self.petals = PetalsControl(self.app_data)
+        self.petals_enabled = bool(self.settings.get("petals_enabled", True))
         
         # Detect hardware
         self.profile = self.detect_hardware()
+        self.profile.update(hardware_details())
+        self.profile.update(self.petals.capabilities())
+        self.profile.update(gpu_telemetry())
+        self.profile.update(petals_enabled=self.petals_enabled, memory_limit_gb=self.memory_limit_gb, cpu_limit=self.cpu_limit)
         if had_legacy_join_code:
             self.save_settings()
         self.protocol("WM_DELETE_WINDOW", self.close_application)
@@ -95,25 +104,91 @@ class ComputeTorrentSeeder(ctk.CTk):
         """Detect system hardware"""
         ram_gb = psutil.virtual_memory().total // (1024 ** 3)
         cpu_cores = psutil.cpu_count() or 1
-        
-        # GPU detection
+
+        # NVIDIA's driver reports CUDA-capable devices and dedicated VRAM.
         gpu = None
         vram = 0
         cuda = False
-        
+        gpu_count = 0
+        gpu_devices = []
         try:
             result = subprocess.run(
                 ['nvidia-smi', '--query-gpu=name,memory.total', '--format=csv,noheader,nounits'],
                 capture_output=True, text=True, timeout=5
             )
             if result.returncode == 0 and result.stdout.strip():
-                parts = result.stdout.strip().split(',')
-                gpu = parts[0].strip()
-                vram = int(float(parts[1].strip()))
+                for row in csv.reader(result.stdout.splitlines()):
+                    if len(row) < 2:
+                        continue
+                    try:
+                        memory_mib = int(float(row[1].strip()))
+                    except ValueError:
+                        memory_mib = 0
+                    gpu_devices.append({"name": row[0].strip(), "vram_mib": memory_mib, "vendor": "NVIDIA"})
                 cuda = True
         except:
             pass
-        
+
+        # Detect Windows display adapters (AMD, Intel, etc.) so AMD GPUs and multi-GPU setups are fully recognized
+        if sys.platform == "win32":
+            try:
+                command = (
+                    "$ErrorActionPreference='Stop'; "
+                    "Get-CimInstance Win32_VideoController | "
+                    "Where-Object { $_.Name -and $_.Name -notmatch 'Microsoft Basic|Remote Display|Virtual Display' } | "
+                    "Select-Object Name, AdapterRAM, DriverVersion, VideoProcessor | ConvertTo-Json -Compress"
+                )
+                result = subprocess.run(
+                    ["powershell.exe", "-NoProfile", "-Command", command],
+                    capture_output=True, text=True, timeout=8
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    items = json.loads(result.stdout)
+                    if isinstance(items, dict):
+                        items = [items]
+                    existing_names = {d["name"].lower() for d in gpu_devices}
+                    for item in items:
+                        name = (item.get("Name") or "").strip()
+                        if not name or any(ex in name.lower() for ex in existing_names):
+                            continue
+                        vendor = (
+                            "AMD" if any(k in name.lower() for k in ["amd", "radeon"]) else
+                            "NVIDIA" if any(k in name.lower() for k in ["nvidia", "geforce", "quadro", "rtx"]) else
+                            "Intel" if any(k in name.lower() for k in ["intel", "arc", "iris"]) else "Unknown"
+                        )
+                        raw_ram = item.get("AdapterRAM") or 0
+                        ram_mib = int(raw_ram) // (1024 * 1024) if raw_ram else 0
+                        gpu_devices.append({
+                            "name": name,
+                            "vram_mib": ram_mib,
+                            "vendor": vendor,
+                            "driver": str(item.get("DriverVersion", "")).strip()
+                        })
+            except (OSError, subprocess.SubprocessError, ValueError, TypeError):
+                pass
+
+        # Linux AMD GPU detection via sysfs
+        if not any(d.get("vendor") == "AMD" for d in gpu_devices) and sys.platform.startswith("linux"):
+            try:
+                import glob
+                cards = glob.glob("/sys/class/drm/card*/device/mem_info_vram_total")
+                for index, total_path in enumerate(cards):
+                    with open(total_path) as f:
+                        vram_bytes = int(f.read().strip())
+                    vram_mib = vram_bytes // (1024 * 1024)
+                    gpu_devices.append({
+                        "name": f"AMD Radeon GPU {index}",
+                        "vram_mib": vram_mib,
+                        "vendor": "AMD"
+                    })
+            except Exception:
+                pass
+
+        gpu_count = len(gpu_devices)
+        vram = max((device.get("vram_mib", 0) for device in gpu_devices), default=0)
+        names = list(dict.fromkeys(device["name"] for device in gpu_devices))
+        gpu = ", ".join(names) if names else None
+
         # Docker check
         docker_ok = False
         try:
@@ -123,15 +198,17 @@ class ComputeTorrentSeeder(ctk.CTk):
             pass
         
         # Tier determination
-        if cuda and vram >= 8192:
+        if (cuda or any(d.get("vendor") == "AMD" for d in gpu_devices)) and vram >= 8192:
             tier = 1  # Tier 1: GPU with 8GB+ VRAM
         else:
-            tier = 2  # Tier 2: CPU or low VRAM
+            tier = 2  # Tier 2: CPU or entry-level GPU
         
         return {
             "GPU": gpu,
             "VRAM": vram,
             "CUDA": cuda,
+            "gpu_count": gpu_count,
+            "gpu_devices": gpu_devices,
             "RAM": ram_gb,
             "cpu_cores": cpu_cores,
             "docker_ok": docker_ok,
@@ -165,8 +242,10 @@ class ComputeTorrentSeeder(ctk.CTk):
 
 💻 CPU: {self.profile['cpu_cores']} cores
 🧠 RAM: {self.profile['RAM']} GB
-🎮 GPU: {self.profile['GPU'] or 'None (CPU mode)'}
-💾 VRAM: {self.profile['VRAM'] / 1024:.1f} GB
+🎮 GPU: {self.profile['GPU'] or 'Not detected (CPU mode)'}
+💾 GPU VRAM: {f"{self.profile['VRAM'] / 1024:.1f} GB" if self.profile['VRAM'] else 'Shared / System RAM'}
+🔢 GPU devices: {self.profile.get('gpu_count', 0)} ({", ".join(dict.fromkeys(d.get('vendor', 'Unknown') for d in self.profile.get('gpu_devices', []))) if self.profile.get('gpu_devices') else 'None'})
+⚙️ Hardware: {'NVIDIA CUDA ready' if self.profile['CUDA'] else ('AMD Radeon detected' if any(d.get('vendor') == 'AMD' for d in self.profile.get('gpu_devices', [])) else 'CPU inference mode')}
 🐳 Docker: {'✅ Available' if self.profile['docker_ok'] else '❌ Not Available'}
 
 📊 Capability Tier: {self.profile['tier']}
@@ -179,6 +258,9 @@ class ComputeTorrentSeeder(ctk.CTk):
         info_box.pack(pady=20, padx=20)
         info_box.insert("1.0", info_text)
         info_box.configure(state="disabled")
+
+        ctk.CTkButton(frame, text="Refresh hardware profile", command=self.refresh_hardware_profile,
+                      height=36, fg_color="#24344d", hover_color="#314868").pack(pady=(0, 16))
 
         connection_card = ctk.CTkFrame(frame)
         connection_card.pack(fill="x", padx=20, pady=5)
@@ -212,6 +294,20 @@ class ComputeTorrentSeeder(ctk.CTk):
         self.memory_entry.insert(0, str(self.memory_limit_gb))
         self.connection_error = ctk.CTkLabel(connection_card, text="", text_color="#ff7070")
         self.connection_error.pack(anchor="w", padx=12)
+        self.layer_switch = ctk.CTkSwitch(connection_card, text="Share model layers (Petals · automatic model download)")
+        self.layer_switch.pack(anchor="w", padx=12, pady=12)
+        if self.petals_enabled:
+            self.layer_switch.select()
+        ctk.CTkLabel(connection_card, text="Shares CPU, GPU/VRAM, RAM and disk capacity with this operator. No personal files are scanned.",
+                     wraplength=720, text_color="#9aabc5").pack(anchor="w", padx=12, pady=4)
+        runtime_controls = ctk.CTkFrame(connection_card, fg_color="transparent")
+        runtime_controls.pack(fill="x", padx=12, pady=10)
+        ctk.CTkButton(runtime_controls, text="Install CPU runtime", command=lambda: self.install_petals_runtime("cpu")).pack(side="left", padx=(0, 8))
+        if self.profile.get("CUDA"):
+            ctk.CTkButton(runtime_controls, text="Install NVIDIA GPU runtime", command=lambda: self.install_petals_runtime("cuda")).pack(side="left", padx=8)
+        ctk.CTkButton(runtime_controls, text="Refresh hardware", command=self.refresh_hardware_profile).pack(side="left", padx=8)
+        self.runtime_label = ctk.CTkLabel(connection_card, text=f"Petals CPU runtime: {'installed' if self.profile.get('petals_image_ready') else 'not installed'} · CUDA runtime: {'ready' if self.profile.get('petals_cuda_ready') else 'not installed or not available'}", wraplength=720)
+        self.runtime_label.pack(anchor="w", padx=12, pady=(0, 8))
         
         if not self.profile['docker_ok']:
             warning = ctk.CTkLabel(frame, 
@@ -231,9 +327,52 @@ class ComputeTorrentSeeder(ctk.CTk):
             text=f"Node ID: {self.node_id or 'New provider'} • Orchestrator: {self.orchestrator_url}",
             font=("Courier New", 9), text_color="gray")
         footer.pack(pady=10)
+
+    def install_petals_runtime(self, device):
+        """Build a sandboxed Petals worker image on this volunteer PC."""
+        if not self.profile.get("docker_ok"):
+            self.runtime_label.configure(text="Start Docker Desktop before installing the runtime")
+            return
+        def report(message):
+            self.after(0, lambda: self.runtime_label.configure(text=message))
+        report(f"Preparing {device.upper()} runtime… Docker may download several GB.")
+        def build():
+            try:
+                self.petals.install_runtime(device, progress=report)
+                self.profile.update(self.petals.capabilities())
+                self.profile.update(petals_enabled=self.petals_enabled, cpu_limit=self.cpu_limit, memory_limit_gb=self.memory_limit_gb)
+                self.after(0, lambda: self.runtime_label.configure(
+                    text=f"Petals CPU runtime: {'installed' if self.profile.get('petals_image_ready') else 'not installed'} · CUDA runtime: {'ready' if self.profile.get('petals_cuda_ready') else 'not installed or not available'}"))
+                report(f"{device.upper()} Petals runtime is installed. Enable layer sharing and reconnect.")
+            except Exception as error:
+                report(f"Runtime installation failed: {str(error)[:500]}")
+        threading.Thread(target=build, daemon=True).start()
+
+    def refresh_hardware_profile(self):
+        """Re-detect system devices before enrollment."""
+        saved = {
+            "orchestrator_url": self.server_entry.get() if hasattr(self, "server_entry") else self.orchestrator_url,
+            "enrollment_token": self.enrollment_entry.get() if hasattr(self, "enrollment_entry") else "",
+            "cpu_limit": self.cpu_entry.get() if hasattr(self, "cpu_entry") else str(self.cpu_limit),
+            "memory_limit_gb": self.memory_entry.get() if hasattr(self, "memory_entry") else str(self.memory_limit_gb),
+        }
+        self.profile = self.detect_hardware()
+        self.profile.update(hardware_details())
+        self.profile.update(self.petals.capabilities())
+        self.profile.update(gpu_telemetry())
+        self.petals_enabled = bool(self.layer_switch.get())
+        self.show_onboarding()
+        for field, value in ((self.server_entry, saved["orchestrator_url"]),
+                             (self.enrollment_entry, saved["enrollment_token"]),
+                             (self.cpu_entry, saved["cpu_limit"]),
+                             (self.memory_entry, saved["memory_limit_gb"])):
+            field.delete(0, "end")
+            field.insert(0, value)
     
     def start_connection(self):
         """Start connection to orchestrator"""
+        self.petals_enabled = bool(self.layer_switch.get())
+        self.profile.update(petals_enabled=self.petals_enabled, cpu_limit=self.cpu_limit, memory_limit_gb=self.memory_limit_gb)
         self.orchestrator_url = self.server_entry.get().strip()
         self.enrollment_token = self.enrollment_entry.get().strip()
         parsed = urlsplit(self.orchestrator_url)
@@ -258,6 +397,7 @@ class ComputeTorrentSeeder(ctk.CTk):
 
     def save_settings(self):
         self.settings.update({"node_id": self.node_id, "access_token": self.access_token,
+                              "petals_enabled": self.petals_enabled,
                               "orchestrator_url": self.orchestrator_url,
                               "cpu_limit": self.cpu_limit, "memory_limit_gb": self.memory_limit_gb,
                               "recent_work": self.recent_work[-20:]})
@@ -331,6 +471,7 @@ class ComputeTorrentSeeder(ctk.CTk):
         if self.shutting_down:
             return
         self.shutting_down = True
+        self.petals.stop()
         if self.websocket and self.event_loop and self.event_loop.is_running():
             try:
                 close_future = asyncio.run_coroutine_threadsafe(self.websocket.close(), self.event_loop)
@@ -374,10 +515,12 @@ class ComputeTorrentSeeder(ctk.CTk):
                         "type": "register",
                         "node_id": self.node_id,
                         "tier": self.profile["tier"],
-                        "profile": {
+                        "profile": {**self.profile,
                             "GPU": self.profile["GPU"],
                             "VRAM": self.profile["VRAM"],
                             "CUDA": self.profile["CUDA"],
+                            "gpu_count": self.profile["gpu_count"],
+                            "gpu_devices": self.profile["gpu_devices"],
                             "RAM": self.profile["RAM"],
                             "cpu_cores": self.profile["cpu_cores"],
                             "docker_ok": self.profile["docker_ok"]
@@ -426,10 +569,16 @@ class ComputeTorrentSeeder(ctk.CTk):
         self.profile["free_ram_gb"] = round(memory.available / (1024 ** 3), 1)
         self.profile["cpu_load_pct"] = round(psutil.cpu_percent(interval=None), 1)
         self.profile["uptime_seconds"] = int(time.time() - psutil.boot_time())
+        self.profile.update(petals_enabled=self.petals_enabled, memory_limit_gb=self.memory_limit_gb, cpu_limit=self.cpu_limit)
+        self.profile.update(await asyncio.to_thread(gpu_telemetry))
+        self.profile["petals"] = await asyncio.to_thread(self.petals.status, self.is_connected and not self.paused)
+        if hasattr(self, 'layer_label'):
+            text = self.profile['petals']
+            self.after(0, lambda: self.layer_label.configure(text=f"Layers: {text.get('start', '—')}–{text.get('end', '—')} · {text.get('status', 'idle')}"))
         await websocket.send(json.dumps({
             "type": "heartbeat",
             "node_id": self.node_id,
-            "state": "paused" if self.paused else ("busy" if self.current_task else "idle"),
+            "state": "paused" if self.paused else ("busy" if self.current_task or self.petals.job_id else "idle"),
             "profile": self.profile,
         }))
     
@@ -446,6 +595,35 @@ class ComputeTorrentSeeder(ctk.CTk):
                 self.update_credits(self.credits_earned)
                 self.update_status("✅ Registration confirmed!")
             
+            elif msg_type == "petals_start":
+                if self.paused or not self.petals_enabled or self.current_task:
+                    self.profile['petals'] = {'job_id': data.get('job_id'), 'error': 'Layer sharing is disabled or provider is busy'}
+                    await websocket_profile(self)
+                    return
+                try:
+                    job_id = data.get('job_id', 'job')
+                    model_id = data.get('spec', {}).get('model_id', 'Model')
+                    start_layer = data.get('stage', {}).get('start', 0)
+                    end_layer = data.get('stage', {}).get('end', 0)
+                    self.current_task = f"Petals: {model_id} (Layers {start_layer}–{end_layer})"
+                    self.update_task_info(f"🚀 Task Received: Serving {model_id} (Layers {start_layer}–{end_layer})")
+                    self.update_status(f"Serving layers {start_layer}–{end_layer} of {model_id}")
+                    if hasattr(self, 'layer_label'):
+                        self.after(0, lambda: self.layer_label.configure(text=f"🟢 Active Task: Layers {start_layer}–{end_layer} assigned", text_color="#00d4ff"))
+                    await asyncio.to_thread(self.petals.start, data, self.orchestrator_url, self.cpu_limit, self.memory_limit_gb)
+                except Exception as error:
+                    self.current_task = None
+                    self.profile['petals'] = {'job_id': data.get('job_id'), 'error': str(error)[:500]}
+                    self.update_task_info(f"❌ Error starting layer task: {str(error)[:100]}")
+                    self.update_status("Error loading layers")
+                    await websocket_profile(self)
+            elif msg_type == "petals_stop":
+                await asyncio.to_thread(self.petals.stop, data.get('job_id'))
+                self.current_task = None
+                self.update_task_info("✅ Layer serving completed · Ready for next task")
+                self.update_status("Online & ready for tasks")
+                if hasattr(self, 'layer_label'):
+                    self.after(0, lambda: self.layer_label.configure(text="Layer sharing enabled · waiting for assignment", text_color="#7ce4bc"))
             elif msg_type == "task_assign":
                 if self.paused:
                     await self.send_status("failed", data.get("task_id"), "Provider is paused", data.get("chunk_id"))
@@ -559,6 +737,13 @@ class ComputeTorrentSeeder(ctk.CTk):
         title = ctk.CTkLabel(frame, text="🖥️ Provider Dashboard",
                            font=("Arial", 24, "bold"))
         title.pack(pady=15)
+        hardware_card = ctk.CTkFrame(frame, fg_color="#122037", corner_radius=16)
+        hardware_card.pack(fill="x", padx=15, pady=12)
+        ctk.CTkLabel(hardware_card, text=self.profile.get('cpu_model', 'Processor'), font=("Arial", 17, "bold"), wraplength=760).pack(anchor="w", padx=20, pady=(16, 4))
+        ctk.CTkLabel(hardware_card, text=f"{self.profile.get('physical_cores', '—')} physical / {self.profile['cpu_cores']} logical cores · {self.profile['RAM']} GB RAM · {self.profile.get('disk_free_gb', '—')} GB disk free").pack(anchor="w", padx=20, pady=4)
+        ctk.CTkLabel(hardware_card, text=f"{self.profile['GPU'] or 'CPU inference'} · {self.profile['VRAM'] / 1024:.1f} GB VRAM", wraplength=760).pack(anchor="w", padx=20, pady=4)
+        self.layer_label = ctk.CTkLabel(hardware_card, text="Layer sharing enabled · waiting for assignment" if self.petals_enabled else "Layer sharing disabled", text_color="#7ce4bc")
+        self.layer_label.pack(anchor="w", padx=20, pady=(4, 16))
         
         # Stats grid
         stats_frame = ctk.CTkFrame(frame)
@@ -566,6 +751,7 @@ class ComputeTorrentSeeder(ctk.CTk):
         
         stats_grid = ctk.CTkFrame(stats_frame)
         stats_grid.pack(fill="x", padx=10, pady=10)
+        stats_grid.grid_columnconfigure((0, 1), weight=1)
         
         # Status
         status_container = ctk.CTkFrame(stats_grid)
@@ -599,8 +785,8 @@ class ComputeTorrentSeeder(ctk.CTk):
         metrics_right = ctk.CTkFrame(stats_grid)
         metrics_right.grid(row=2, column=1, sticky="ew", padx=5, pady=5)
         
-ctk.CTkLabel(metrics_right, text="Credits Earned",
-                    font=("Arial", 11, "bold")).pack(pady=5)
+        ctk.CTkLabel(metrics_right, text="Credits Earned",
+                     font=("Arial", 11, "bold")).pack(pady=5)
         self.credits_label = ctk.CTkLabel(metrics_right, text="0", 
                                          font=("Arial", 24, "bold"),
                                          text_color="#4caf50")
@@ -618,6 +804,9 @@ ctk.CTkLabel(metrics_right, text="Credits Earned",
 
 Node ID: {self.node_id or 'Enrolling'}
 Tier: {self.profile['tier']} ({'GPU' if self.profile['tier'] == 1 else 'CPU'})
+GPU: {self.profile['GPU'] or 'None detected'} ({self.profile.get('gpu_count', 0)} device(s))
+NVIDIA VRAM: {f"{self.profile['VRAM'] / 1024:.1f} GB" if self.profile['VRAM'] else 'Not reported'} · CUDA: {'ready' if self.profile['CUDA'] else 'unavailable'}
+Docker: {'ready' if self.profile['docker_ok'] else 'unavailable'}
 Coordinator: {self.orchestrator_url}
 Resource limit: {self.cpu_limit} CPU cores / {self.memory_limit_gb} GB RAM
 Model cache: {self.app_data / 'models'}
@@ -651,6 +840,8 @@ Credits are demo accounting only and have no cash value.
 
     def toggle_pause(self):
         self.paused = not self.paused
+        if self.paused:
+            self.petals.stop()
         self.pause_btn.configure(text="▶️ Resume contributions" if self.paused else "⏸️ Pause contributions")
         self.update_status("Paused; current task will finish" if self.paused and self.current_task else
                            ("Paused; not accepting tasks" if self.paused else "Resuming network contributions"))
@@ -703,6 +894,11 @@ Credits are demo accounting only and have no cash value.
                 self.after(0, render)
             except RuntimeError:
                 pass
+
+async def websocket_profile(app):
+    if app.websocket:
+        await app.websocket.send(json.dumps({'type': 'heartbeat', 'state': 'paused' if app.paused else 'idle', 'profile': app.profile}))
+
 
 def main():
     app = ComputeTorrentSeeder()

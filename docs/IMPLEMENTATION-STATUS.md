@@ -17,12 +17,14 @@ This page separates working MVP code from roadmap architecture. A protocol name 
 | Audit receipt | Reports are committed before a fresh challenge nonce selects up to two distinct report openings. The Merkle report root and task, chunk, model, prompt, and verdict metadata are bound into a SHA-256 envelope. The API independently recomputes the challenge and inclusion proofs. This proves transcript consistency, not correct hidden-state inference. |
 | Credits | Submitter requests cost one demo credit each; verified provider work can add demo credits. Credits have no cash value. |
 | Deployment target | Local machine and trusted LAN during development. No public domain or public deployment is required. |
+| Model Studio pilot | JSON/XML recipes for BLOOM/BLOOMZ 560M, pinned Hub revisions, RAM/VRAM-aware allocation of contiguous layers to two to eight opted-in providers, private Hivemind DHT routing, coordinator-side generation, token/boundary replay, a hidden canary, and per-job timing. The Petals image and model weights must be downloaded; a live multi-PC result requires connected provider machines. |
+| Benchmark export | Optional coordinator CPU baseline for Model Studio jobs, fixed peer-count repeat runner, and prompt-free CSV/JSON export. Results exist only after real jobs complete. |
 
 ## Explicit future architecture work
 
 - **Trackerless libp2p data plane:** transfer model/prompt chunks over authenticated libp2p protocols with relay-assisted fallback, resumption, access control, and measured multi-peer failure recovery. The existing LAN discovery/relay overlay is not a file-transfer implementation.
-- **Full VeriLLM:** per-layer hidden-state logging and commitments, verifier prefill/recomputation, indistinguishable inference/verification work, VRF/on-chain challenge and dispute contracts, peer-prediction incentives, and protocol-specific trust assumptions. The current text-only llama.cpp path has no intermediate activation interface or chain, so its output-report receipts are not full VeriLLM proofs.
-- **Production canary layer:** the local MVP has hidden exact-answer jobs, private expected hashes, randomized enqueueing, and provider failure tracking. Stronger probe secrecy/rotation, cross-runtime tolerances, collusion analysis, bounded recovery, and measured false-positive/false-negative rates remain future work.
+- **Full VeriLLM:** Model Studio captures and checks real stage activations against a trusted local replay, but per-layer provider-signed commitments, independent verifiers, indistinguishable inference/verification work, VRF/on-chain challenge and dispute contracts, and peer-prediction incentives remain absent. The proposal excludes blockchain. The GGUF output-report receipts also are not full VeriLLM proofs.
+- **Production canary layer:** GGUF jobs have hidden exact-answer tasks and provider failure tracking. Model Studio sends a second undisclosed prompt through the assigned layer route and compares its tokens and every stage boundary with a coordinator replay. Stronger probe secrecy/rotation, collusion analysis, bounded recovery, and measured false-positive/false-negative rates remain future work.
 - **Internet-scale volunteer network:** public discovery, NAT traversal strategy, operator identity, abuse response, and security review. Current setup is trusted-LAN only and must not be router-forwarded.
 - **Multi-user service:** self-service accounts, per-user task ownership and authorization, organization isolation, and non-demo billing/incentives. Current portal uses one local operator login and a fixed requestor account.
 
@@ -34,9 +36,11 @@ Use the canonical local stack from the repository root. Replace every secret pla
 
 ```powershell
 Copy-Item .env.example .env
-docker compose -f docker-compose.local.yml up --build -d
+.\Start-ComputeTorrent.ps1
+# Once the large Petals runtime image is built:
+.\Start-ComputeTorrent.ps1 -WithPetals
 ```
 
 Open `http://localhost:3000`; use the provider app with `ws://127.0.0.1:8001/ws/seeder` on the coordinator machine. For additional trusted-LAN PCs, use the coordinator's private IP in the provider app and bind only the local portal/coordinator and libp2p ports to the LAN as described in [IMPLEMENTATION-SETUP.md](../IMPLEMENTATION-SETUP.md). Do not expose these services publicly.
 
-`backend/`, `frontend/`, and `desktop/` are separate rebuilt source trees, not live links to the canonical numbered modules. Update them deliberately when maintaining the standalone stack.
+Docker Desktop groups the current containers under `computetorrent-mvp`. The older stopped `computetorrent` group uses the standalone Compose file in `docker/`; it does not contain the running portal. `backend/`, `frontend/`, and `desktop/` are separate rebuilt source trees, not live links to the canonical numbered modules. Update them deliberately when maintaining the standalone stack.

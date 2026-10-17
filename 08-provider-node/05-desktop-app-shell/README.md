@@ -10,7 +10,17 @@ The Windows Python app connects a volunteer PC to the local coordinator, display
 4. It returns the result over the coordinator WebSocket, receives the verification verdict, and stores a short local contribution history.
 5. Pausing stops new assignments; an already running task can finish. Closing the app closes its connection and stops its local libp2p peer process.
 
-The libp2p peer joins the LAN discovery/relay overlay for connectivity information. It does not transfer files; WebTorrent still uses configured tracker signalling. Full trackerless libp2p file transfer and the full VeriLLM/canary architecture remain future work. See [implementation status](../../docs/IMPLEMENTATION-STATUS.md).
+For layer inference, install the CPU Petals runtime from the app (or the NVIDIA
+runtime on a CUDA machine), then enable **Share model layers**. The app reports
+CPU model and core counts, available RAM, display adapters, NVIDIA VRAM when
+available, disk capacity, Docker readiness, and resource limits. When the
+coordinator assigns a pinned BLOOM/BLOOMZ model and contiguous block range, the
+app launches a resource-limited Docker container. Weights download and cache on
+the provider PC. Keep the app open and allow private-LAN TCP traffic to the
+coordinator on 8001/31331 and each provider on 31330. This path is managed in
+the portal's Model Studio page and has separate job history from GGUF tasks.
+
+The libp2p peer joins the LAN discovery/relay overlay for connectivity information. It does not transfer GGUF files; WebTorrent still uses configured tracker signalling. Petals uses a separate private Hivemind DHT to route model activations. Trackerless libp2p GGUF file transfer and full independent VeriLLM verification remain future work. See [implementation status](../../docs/IMPLEMENTATION-STATUS.md).
 
 ## Build and install locally
 

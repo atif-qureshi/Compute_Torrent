@@ -13,10 +13,13 @@ from pathlib import Path
 def main():
     request = json.loads(Path("/state/request.json").read_text())
     spec, stage = request["spec"], request["stage"]
-    if spec["model_id"] not in {"bigscience/bloom-560m", "bigscience/bloomz-560m"}:
-        raise ValueError("Unsupported small model")
-    if not re.fullmatch(r"[a-f0-9]{40}", spec["revision"]) or not 0 <= stage["start"] < stage["end"] <= 24:
-        raise ValueError("Invalid pinned revision or block range")
+    if not spec.get("model_id"):
+        raise ValueError("model_id is required")
+    if not (0 <= stage["start"] < stage["end"]):
+        raise ValueError("Invalid block range")
+    advertise_port = int(request.get("advertise_port", 31330))
+    if not 1024 <= advertise_port <= 65535:
+        raise ValueError("Invalid advertised provider port")
     state = {"job_id": request["job_id"], "status": "loading", "start": stage["start"], "end": stage["end"]}
     def save():
         state["updated_at"] = time.time()
@@ -28,7 +31,7 @@ def main():
         "--revision", spec["revision"], "--block_indices", f"{stage['start']}:{stage['end']}",
         "--dht_prefix", request["prefix"], "--device", stage["device"],
         "--torch_dtype", "float32", "--quant_type", "none", "--compression", "NONE",
-        "--port", "31330", "--announce_maddrs", f"/ip4/{request['advertise_host']}/tcp/31330",
+        "--port", "31330", "--announce_maddrs", f"/ip4/{request['advertise_host']}/tcp/{advertise_port}",
         "--inference_max_length", "512", "--attn_cache_tokens", "1024", "--num_handlers", "2",
         "--max_disk_space", "8GiB", "--throughput", "auto", "--balance_quality", "0",
         "--initial_peers", *request["bootstrap"]]

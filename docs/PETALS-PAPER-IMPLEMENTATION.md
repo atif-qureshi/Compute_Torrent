@@ -1,54 +1,56 @@
 # Petals paper implementation map
 
-This records the boundary between the attached paper's design, the separate
-upstream Petals runtime, and the portal's existing independent-prompt workflow.
-Petals model parallelism routes each token's hidden state through consecutive
-Transformer blocks hosted by different peers.
+ComputeTorrent's Model Studio is a local, small-model Petals pilot. Its gateway
+runs a private Hivemind DHT, the coordinator assigns contiguous Transformer
+blocks to enrolled provider PCs according to their reported free RAM/VRAM, and
+the generation client sends hidden states through those blocks for every token.
+The user uploads JSON or XML model details; model weights download and cache on
+the provider PCs and on the coordinator's trusted reference verifier.
 
-## Paper requirements and project status
+## Current flow
 
-| Petals behavior | Current project state |
+1. The portal sends the recipe to `/api/distributed/jobs` through its authenticated proxy.
+2. The coordinator validates the model ID and pins its Hugging Face revision to a commit.
+3. It allocates all 24 BLOOM blocks to at least two opted-in, runtime-ready providers.
+4. The provider app starts one resource-limited Petals block server per assigned range.
+5. The private gateway runs token generation through the reported peer route.
+6. A trusted local reference model replays the generated sequence and compares
+   every generated token's stage-boundary activation. An undisclosed short canary
+   runs through the same route and replay. Failed checks do not yield a verified result.
+7. The job, route, timings, result, and off-chain receipt appear in Model Studio.
+
+The GGUF `/api/tasks` route is a separate workflow. It assigns independent
+prompts, not model layers. Its WebTorrent transport currently uses tracker
+signalling; Petals uses its own Hivemind DHT for model-layer routing.
+
+## Relation to the Petals paper
+
+| Paper behavior | Local implementation |
 |---|---|
-| Servers host contiguous model blocks sized for their resources | `08-provider-node/06-petals-runtime/server.py` launches upstream Petals, which chooses and serves resource-sized block ranges. Not wired to the ComputeTorrent provider desktop app. |
-| Joining servers target weak-throughput blocks and ranges stay contiguous | Upstream Petals manages its DHT placement and rebalancing. `05-allocator-churn/layer_planner.py` is an unused planning helper. |
-| Servers measure and publish compute/network throughput | Upstream Petals does this in its DHT; current ComputeTorrent heartbeats report only basic provider metrics. |
-| Client selects a low-latency layer route | `client.py` calls upstream Petals' distributed generation client. The local beam-search helper is not involved. |
-| Client tokenizes/samples locally while peers execute model blocks | Implemented by the separate Petals generation client, not by the existing `/api/tasks` endpoint. |
-| Servers retain inference sessions/KV cache | Managed by upstream Petals block servers; ComputeTorrent's existing provider WebSocket has no activation/session protocol. |
-| Client recovers from peer failure | Upstream Petals routing/retry behavior is used by the client; ComputeTorrent's existing retries remain prompt-chunk retries only. |
-| Quantized weights and compressed hidden states | Petals server wrapper exposes upstream quantization and tensor-compression options. These options do not affect the GGUF runner. |
-| Verify intermediate layer outputs | Not implemented. Existing output hashes/replicas do not verify hidden-state activations. |
+| Consecutive model blocks on different peers | Explicit contiguous layer allocation and upstream Petals block servers |
+| Resource-aware placement | Conservative CPU/GPU memory budget from provider heartbeats |
+| DHT discovery and routed hidden states | Private upstream Hivemind DHT and Petals remote sequences |
+| Per-session KV cache | Upstream Petals inference sessions |
+| Client-side tokenizer and output head | Gateway generation client |
+| Throughput-driven balancing and fast churn recovery | Not yet measured or implemented by the coordinator; a lost peer fails the job and requires resubmission |
+| Quantized serving | The pilot uses FP32 with no tensor compression so local replay is comparable |
 
-## Runtime boundary and model format
+The proposal asks for blockchain-free verification. The receipt therefore
+records a local activation commitment, a post-commit challenge, full trusted
+reference replay, and a hidden canary. It does not implement VeriLLM's public
+chain, VRF, peer-prediction incentives, or dispute contracts. Trust in the
+coordinator and its reference model remains an explicit assumption.
 
-The Petals entrypoints are in
-[`08-provider-node/06-petals-runtime/`](../08-provider-node/06-petals-runtime/).
-They use upstream Petals and its Hivemind DHT; the project's libp2p/WebTorrent
-network is not a Petals DHT. Providers need a Petals-supported Hugging Face
-Transformer checkpoint and compatible hardware/runtime. The current Qwen2.5
-GGUF is for single-provider llama.cpp and cannot be loaded by the Petals block
-server as-is.
+## Running
 
-The upstream Petals server chooses block ranges and reports throughput. For a
-private home network, start one node with `--swarm-mode new`, then join the
-printed DHT multiaddr from other trusted nodes. The `public` mode joins the
-public Petals DHT, where other operators process activations and may recover
-prompt content. Never send secrets to a public swarm.
+From the repository root use `.\Start-ComputeTorrent.ps1 -WithPetals`. On each
+provider, install its hardware-matched Petals runtime in the desktop app and
+turn on layer sharing. The coordinator's advertised private IPv4 address and
+LAN TCP port 31331 must be reachable from the provider PCs. Provider block
+servers use TCP port 31330. The first image build and first model download can
+be large. The generated provider installer bundles the runtime build recipes,
+not model weights.
 
-The Petals runtime is not yet connected to the portal's `/api/tasks`, model
-catalog, ComputeTorrent enrollment credentials, history/results, or credits.
-Only generation launched through the Petals client is distributed Petals
-inference; the portal's current full-model Docker task must not be labeled so.
-
-## Remaining integration work
-
-1. Add a Petals model catalog with architecture, revision, license and hardware
-   estimates, separate from the GGUF manifest.
-2. Add an authenticated local gateway that submits requests to Petals and
-   persists route/model/result receipts into task history.
-3. Add provider desktop controls and private DHT bootstrap address exchange;
-   keep one-time enrollment credentials separate from DHT addresses.
-4. Add activation integrity challenges and per-layer verification. Current
-   output hashes, replicas and canaries do not verify intermediate tensors.
-5. Exercise a complete multi-PC inference and failover run using the actual
-   machines and model before calling portal integration complete.
+A successful model-parallel claim requires a completed local job with at least
+two actual provider PCs, its route, and a passing receipt. Source compilation
+and the existence of a job screen alone do not establish that result.

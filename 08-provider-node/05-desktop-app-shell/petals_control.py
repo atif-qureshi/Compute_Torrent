@@ -1,16 +1,20 @@
 """Desktop-owned Petals containers. Only local, operator-built runtime images."""
 import ipaddress
+import hashlib
 import json
 import os
 import re
 import socket
 import subprocess
+import sys
 import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
 CPU_IMAGE = "computetorrent-petals:local"
 CUDA_IMAGE = "computetorrent-petals:cuda-local"
+RUNTIME_DIR = (Path(__file__).resolve().parents[1] / "06-petals-runtime" if not getattr(sys, "frozen", False)
+               else Path(sys._MEIPASS) / "petals-runtime")
 
 
 def command(args, timeout=20):
@@ -22,9 +26,12 @@ def command(args, timeout=20):
 
 
 class PetalsControl:
-    def __init__(self, root):
+    def __init__(self, root, host_port=31330):
         self.root = Path(root) / "petals"
         self.root.mkdir(parents=True, exist_ok=True)
+        self.host_port = int(host_port)
+        if not 1024 <= self.host_port <= 65535:
+            raise ValueError("Petals host port must be between 1024 and 65535")
         self.job_id = None
         self.container = None
 
@@ -43,16 +50,30 @@ class PetalsControl:
             pass
         return {"petals_image_ready": ready, "petals_cuda_ready": cuda}
 
+    def install_runtime(self, device="cpu", progress=None):
+        if device not in {"cpu", "cuda"}:
+            raise ValueError("Choose CPU or CUDA runtime")
+        dockerfile = RUNTIME_DIR / ("Dockerfile" if device == "cpu" else "Dockerfile.cuda")
+        image = CPU_IMAGE if device == "cpu" else CUDA_IMAGE
+        if not dockerfile.is_file():
+            raise RuntimeError("Bundled Petals runtime recipe is missing; reinstall the latest provider app")
+        if progress:
+            progress(f"Building the {device.upper()} Petals runtime; Docker is downloading dependencies")
+        result = subprocess.run(["docker", "build", "--progress=plain", "-f", str(dockerfile), "-t", image, str(RUNTIME_DIR)],
+            capture_output=True, text=True, timeout=3600,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        if result.returncode:
+            raise RuntimeError((result.stderr or result.stdout or "Docker image build failed")[-1200:])
+        return image
+
     def start(self, data, coordinator_url, cpu_limit, memory_gb):
         job_id = data.get("job_id", "")
         spec, stage = data.get("spec", {}), data.get("stage", {})
         if not re.fullmatch(r"[a-f0-9]{32}", job_id):
             raise ValueError("Invalid layer job ID")
-        if spec.get("model_id") not in {"bigscience/bloom-560m", "bigscience/bloomz-560m"}:
-            raise ValueError("Unsupported model")
-        if not re.fullmatch(r"[a-f0-9]{40}", spec.get("revision", "")):
-            raise ValueError("Model revision must be pinned")
-        if stage.get("device") not in {"cpu", "cuda"} or not 0 <= stage.get("start", -1) < stage.get("end", -1) <= 24:
+        if not spec.get("model_id"):
+            raise ValueError("model_id is required")
+        if stage.get("device") not in {"cpu", "cuda"} or not 0 <= stage.get("start", -1) < stage.get("end", -1):
             raise ValueError("Invalid block assignment")
         if data.get("prefix") != "ct-" + job_id:
             raise ValueError("Invalid job namespace")
@@ -60,7 +81,8 @@ class PetalsControl:
             raise ValueError("Missing DHT bootstrap")
         self.stop()
         self.job_id = job_id
-        self.container = "ct-layer-" + job_id[:16]
+        node_suffix = hashlib.sha256(stage["node_id"].encode()).hexdigest()[:8]
+        self.container = "ct-layer-" + job_id[:10] + "-" + node_suffix
         folder = self.root / job_id
         folder.mkdir(exist_ok=True)
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as route:
@@ -70,19 +92,29 @@ class PetalsControl:
         # all peers use the coordinator's host networking path.
         if ipaddress.ip_address(address).is_loopback:
             address = socket.gethostbyname(socket.gethostname())
-        data = {**data, "advertise_host": address}
+        data = {**data, "advertise_host": address, "advertise_port": self.host_port}
         (folder / "request.json").write_text(json.dumps(data))
         (folder / "lease").write_text(str(time.time()))
+        target_image = CUDA_IMAGE if stage["device"] == "cuda" else CPU_IMAGE
+        try:
+            command(["docker", "image", "inspect", target_image, "--format", "{{.Id}}"])
+        except Exception:
+            self.install_runtime(stage["device"])
         args = ["docker", "run", "-d", "--rm", "--name", self.container,
                 "--label", "computetorrent.role=layer-provider", "--memory", f"{memory_gb}g",
-                "--cpus", str(cpu_limit), "--pids-limit", "256", "--security-opt", "no-new-privileges",
-                "-e", f"OMP_NUM_THREADS={cpu_limit}", "-p", "31330:31330",
+                "--cpus", str(cpu_limit), "--pids-limit", "256", "--shm-size", "1g",
+                "--init", "--security-opt", "no-new-privileges",
+                "-e", f"OMP_NUM_THREADS={cpu_limit}", "-p", f"{self.host_port}:31330",
                 "--mount", f"type=bind,source={folder.resolve()},target=/state",
                 "-v", "computetorrent-petals-cache:/cache"]
         if stage["device"] == "cuda":
             args += ["--gpus", "device=0"]
-        args += [CUDA_IMAGE if stage["device"] == "cuda" else CPU_IMAGE, "python", "/app/worker.py"]
-        command(args, timeout=60)
+        args += [target_image, "python", "/app/worker.py"]
+        try:
+            command(args, timeout=60)
+        except Exception:
+            self.stop(job_id)
+            raise
 
     def status(self, renew=True):
         if not self.job_id:
@@ -95,7 +127,9 @@ class PetalsControl:
             path = folder / "status.json"
             if path.exists():
                 result = json.loads(path.read_text())
-            command(["docker", "inspect", self.container, "--format", "{{.State.Running}}"])
+            running = command(["docker", "inspect", self.container, "--format", "{{.State.Running}}"])
+            if running.lower() != "true":
+                raise RuntimeError("Petals layer container stopped; inspect its Docker logs")
         except Exception as exc:
             result.update(status="failed", error=str(exc)[:400])
         return result

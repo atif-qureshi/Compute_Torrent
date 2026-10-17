@@ -21,6 +21,10 @@ bundle_datas.extend([
     (os.path.join(sync_src, 'libp2p_network.mjs'), 'webtorrent'),
     (os.path.join(sync_module, 'node_modules'), 'webtorrent/node_modules'),
 ])
+petals_runtime = os.path.abspath(os.path.join(SPECPATH, '..', '06-petals-runtime'))
+if not os.path.isfile(os.path.join(petals_runtime, 'Dockerfile')):
+    raise RuntimeError('Petals runtime recipe is missing')
+bundle_datas.append((petals_runtime, 'petals-runtime'))
 bundle_datas.extend(ctk_datas)
 
 a = Analysis(

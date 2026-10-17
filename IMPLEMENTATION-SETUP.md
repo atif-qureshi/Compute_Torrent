@@ -1,6 +1,6 @@
 # ComputeTorrent implementation and setup
 
-This repository now contains an end-to-end MVP path for local GGUF inference, WebTorrent delivery, independent prompt chunks, replica comparison, requestor credits/history, and a Windows seeder package.
+This repository contains a local GGUF workflow and a separate Petals model-parallel pilot for small BLOOM models, managed from the portal and Windows provider app.
 
 ## Run locally (no domain or public deployment)
 
@@ -13,10 +13,14 @@ Copy-Item .env.example .env
 Replace the secret placeholders with unique private values, then start Docker Desktop. Start only the local profile:
 
 ```powershell
-docker compose -f docker-compose.local.yml up --build
+.\Start-ComputeTorrent.ps1
 ```
 
-Open `http://localhost:3000` and sign in with `COMPUTETORRENT_PORTAL_PASSWORD`. The coordinator API is at `http://127.0.0.1:8001`; PostgreSQL and swarm administration stay loopback-only. The first task creates a demo balance of 100 credits and each task costs 1 credit. This command does not start Caddy or require a DNS name.
+Open `http://localhost:3000` and sign in with `COMPUTETORRENT_PORTAL_PASSWORD`. Docker Desktop groups this canonical stack as `computetorrent-mvp`; the older stopped `computetorrent` group came from `docker/docker-compose.yml`. The coordinator API is at `http://127.0.0.1:8001`; PostgreSQL and swarm administration stay loopback-only. The first GGUF task creates a demo balance of 100 credits and each task costs 1 credit. This command does not start Caddy or require a DNS name.
+
+## Run a small model across provider PCs
+
+Start the optional gateway with `.\Start-ComputeTorrent.ps1 -WithPetals`, then open `http://localhost:3000/inference`. Connect at least two provider PCs, enable “Share model layers”, and install each provider's CPU Petals runtime. Providers with NVIDIA GPUs can install the separate CUDA runtime. Upload JSON or XML with `model_id` set to `bigscience/bloom-560m` or `bigscience/bloomz-560m`, plus a prompt and optional `max_new_tokens` (1–128) and `min_peers` (2–8). `revision: "main"` resolves to a fixed Hugging Face commit before workers start. Model weights download and cache automatically on providers; submitters do not download model files. The coordinator also needs internet access and spare RAM to download the model for reference verification. For trusted LAN providers, configure the coordinator's private IPv4 address as described below and allow TCP ports 8001, 31330 and 31331 in Windows Firewall. Keep `127.0.0.1` only for a single-PC setup. Model Studio runs use their own job history and verification receipts, separate from GGUF task history and credits. See [Petals runtime details](docs/PETALS-PAPER-IMPLEMENTATION.md).
 
 ## Connect volunteer computers on your local network
 

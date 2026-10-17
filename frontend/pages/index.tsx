@@ -185,52 +185,24 @@ export default function Home() {
       {status === 'submitted' && <div className={styles.success} role="status">Task queued: <code>{taskId}</code> <a href="/history">View progress →</a></div>}
 
       <div className={styles.workspaceGrid}>
-        <section className={styles.card}>
-          <div className={styles.sectionHeading}><div><div className={styles.eyebrow}>NEW WORKLOAD</div><h2>Submit AI task</h2></div><span className={styles.liveBadge} data-offline={!coordinatorOnline}>{connectionLabel}</span></div>
-          {!coordinatorOnline && <div className={styles.emptyState}><strong>Coordinator is not ready</strong><p>Keep the local Compose stack running, then retry. You can still configure provider PCs while models are being prepared.</p><button type="button" className={styles.buttonSecondary} onClick={refresh}>Check again</button></div>}
-          {coordinatorOnline && models.length === 0 ? <div className={styles.emptyState}><strong>No model is available yet</strong><p>Register an operator-approved GGUF model with the local coordinator. Model weights are not bundled with ComputeTorrent.</p></div> : coordinatorOnline &&
-            <form onSubmit={submitTask} className={styles.form}>
-              <div className={styles.twoColumns}>
-                <div className={styles.formGroup}><label htmlFor="model">Inference model</label><select id="model" value={modelName} onChange={(e) => setModelName(e.target.value)} className={styles.select}>
-                  {models.map((model) => <option key={model.name} value={model.name}>{model.label || model.name}</option>)}</select></div>
-                <div className={styles.formGroup}><label htmlFor="mode">Scheduling strategy</label><select id="mode" value={mode} onChange={(e) => setMode(e.target.value)} className={styles.select}>
-                  <option value="WS-RR">WS-RR · balance work across workers</option><option value="CC-BP">CC-BP · prefer higher capacity</option></select></div>
-              </div>
-              <div className={styles.formGroup}><div className={styles.labelRow}><label htmlFor="prompt">Prompt</label><label className={styles.checkboxLabel}><input type="checkbox" checked={batchMode} onChange={(e) => { setBatchMode(e.target.checked); setStatus('idle') }} /> One independent prompt per line</label></div>
-                <textarea id="prompt" value={prompt} onChange={(e) => { setPrompt(e.target.value); setStatus('idle') }} placeholder={batchMode ? 'One independent prompt per line (blank lines are ignored)' : 'Describe the work you want the model to do…'} rows={7} className={styles.textarea} required />
-                <small className={styles.formHint}>{batchMode ? `${promptItems.length} of ${MAX_PROMPTS} prompts · ${promptItems.length} independent chunks` : `${promptItems[0]?.length || 0} of ${MAX_PROMPT_CHARS.toLocaleString()} characters`}{promptIssue ? ` · ${promptIssue}` : ''}</small>
-              </div>
-              <div className={styles.twoColumns}>
-                <div className={styles.formGroup}><label htmlFor="tokens">Maximum output · {maxTokens} tokens</label><input id="tokens" className={styles.range} type="range" min="32" max="2048" step="32" value={maxTokens} onChange={(e) => setMaxTokens(Number(e.target.value))} /></div>
-                <div className={styles.formGroup}><label htmlFor="ram">Minimum worker RAM · {minRam ? `${minRam} GB` : 'Any available'}</label><input id="ram" className={styles.range} type="range" min="0" max="64" step="4" value={minRam} onChange={(e) => setMinRam(Number(e.target.value))} /></div>
-              </div>
-              <label className={styles.checkboxLabel}><input type="checkbox" checked={requireCuda} onChange={(e) => setRequireCuda(e.target.checked)} /> Only assign to CUDA-capable workers</label>
-              <p className={styles.formHint}>{eligibleSeeders.length} currently connected worker(s) meet these hardware filters. Jobs can remain queued while matching PCs reconnect.</p>
-              <div className={styles.privacyNote}><strong>Before submitting:</strong> prompts are sent to assigned volunteer PCs for inference. Do not include passwords, personal records, or other sensitive data. One batch submission costs 1 demo credit, regardless of its prompt count.</div>
-              <button type="submit" disabled={submitDisabled} className={styles.button}>{status === 'submitting' ? 'Submitting…' : `Submit ${batchMode ? `${promptItems.length || 0} prompts` : 'task'} · 1 demo credit`}</button>
-            </form>}
+        <section className={styles.card}><div className={styles.sectionHeading}><div><div className={styles.eyebrow}>VOLUNTEER NETWORK</div><h2>Connect worker PCs</h2></div><span className={styles.liveBadge} data-offline={!coordinatorOnline}>{onlineSeeders.length} online</span></div>
+          <p className={styles.muted}>Install the provider app on each trusted computer. On the coordinator PC use localhost; on another PC, replace the hostname with the coordinator’s private LAN IP.</p>
+          <div className={styles.networkAddress}><code>{providerAddress}</code><button type="button" className={styles.buttonSecondary} onClick={copyProviderAddress}>{copiedAddress ? 'Copied' : 'Copy address'}</button></div>
+          <ol className={styles.setupSteps}><li>Keep this coordinator and its local stack running.</li><li>Enter the address above in the provider app.</li><li>Enter the join code configured as <code>COMPUTETORRENT_SEEDER_ENROLLMENT_TOKEN</code> in the coordinator’s local <code>.env</code>.</li><li>For another PC, allow ports 8001 and 9100 only on the trusted LAN. Do not expose them to the public internet.</li></ol>
+          {seeders.length === 0 ? <p className={styles.muted}>No provider PCs are enrolled yet.</p> : <div className={styles.workerList}>{sortedSeeders.slice(0, 8).map((node) => {
+            const state = node.status === 'revoked' ? 'revoked' : (node.state || node.status || 'offline')
+            const profile = node.profile || {}
+            return <div className={styles.workerRow} key={node.node_id}>
+              <span className={styles.workerDot} data-state={state} /><div className={styles.workerInfo}><strong>{node.node_id}</strong><small>{profile.GPU || `${profile.cpu_cores || '—'} CPU cores`} · {profile.RAM ?? '—'} GB RAM · {timeAgo(node.last_heartbeat)}</small></div><span className={styles.workerState}>{state}</span><button className={styles.revokeButton} type="button" onClick={() => revokeProvider(node.node_id)} disabled={state === 'revoked'}>Revoke</button>
+            </div>
+          })}</div>}
+          <a className={styles.textLink} href="/history">Open task history →</a>
         </section>
-
-        <aside className={styles.sideColumn}>
-          <section className={styles.card}><div className={styles.sectionHeading}><div><div className={styles.eyebrow}>VOLUNTEER NETWORK</div><h2>Connect worker PCs</h2></div><span className={styles.liveBadge} data-offline={!coordinatorOnline}>{onlineSeeders.length} online</span></div>
-            <p className={styles.muted}>Install the provider app on each trusted computer. On the coordinator PC use localhost; on another PC, replace the hostname with the coordinator’s private LAN IP.</p>
-            <div className={styles.networkAddress}><code>{providerAddress}</code><button type="button" className={styles.buttonSecondary} onClick={copyProviderAddress}>{copiedAddress ? 'Copied' : 'Copy address'}</button></div>
-            <ol className={styles.setupSteps}><li>Keep this coordinator and its local stack running.</li><li>Enter the address above in the provider app.</li><li>Enter the join code configured as <code>COMPUTETORRENT_SEEDER_ENROLLMENT_TOKEN</code> in the coordinator’s local <code>.env</code>.</li><li>For another PC, allow ports 8001 and 9100 only on the trusted LAN. Do not expose them to the public internet.</li></ol>
-            {seeders.length === 0 ? <p className={styles.muted}>No provider PCs are enrolled yet.</p> : <div className={styles.workerList}>{sortedSeeders.slice(0, 8).map((node) => {
-              const state = node.status === 'revoked' ? 'revoked' : (node.state || node.status || 'offline')
-              const profile = node.profile || {}
-              return <div className={styles.workerRow} key={node.node_id}>
-                <span className={styles.workerDot} data-state={state} /><div className={styles.workerInfo}><strong>{node.node_id}</strong><small>{profile.GPU || `${profile.cpu_cores || '—'} CPU cores`} · {profile.RAM ?? '—'} GB RAM · {timeAgo(node.last_heartbeat)}</small></div><span className={styles.workerState}>{state}</span><button className={styles.revokeButton} type="button" onClick={() => revokeProvider(node.node_id)} disabled={state === 'revoked'}>Revoke</button>
-              </div>
-            })}</div>}
-            <a className={styles.textLink} href="/history">Open task history →</a>
-          </section>
-          <section className={styles.card}><div className={styles.sectionHeading}><div><div className={styles.eyebrow}>IMPLEMENTATION STATUS</div><h2>What runs today</h2></div></div>
-            <ul className={styles.featureList}><li>WebTorrent file transfer with SHA-256 checks</li><li>Replica agreement and operator-supplied output-hash canaries (MVP checks)</li><li>VeriLLM-inspired transcript commitments (limited audit record)</li></ul>
-            <p className={styles.muted}>libp2p currently supports LAN discovery and relay connectivity; it does not carry model or prompt files yet. Trackerless libp2p data transfer and the full VeriLLM/canary architecture remain future work.</p>
-            <p className={styles.muted}>Connected libp2p peers: {network?.status === 'unavailable' ? 'unavailable' : (network?.connected_peer_count ?? 'checking…')}. Last portal refresh: {lastUpdated ? new Date(lastUpdated).toLocaleTimeString() : 'checking…'}.</p>
-          </section>
-        </aside>
+        <section className={styles.card}><div className={styles.sectionHeading}><div><div className={styles.eyebrow}>IMPLEMENTATION STATUS</div><h2>What runs today</h2></div></div>
+          <ul className={styles.featureList}><li>WebTorrent file transfer with SHA-256 checks</li><li>Replica agreement and operator-supplied output-hash canaries (MVP checks)</li><li>VeriLLM-inspired transcript commitments (limited audit record)</li></ul>
+          <p className={styles.muted}>libp2p currently supports LAN discovery and relay connectivity; it does not carry model or prompt files yet. Trackerless libp2p data transfer and the full VeriLLM/canary architecture remain future work.</p>
+          <p className={styles.muted}>Connected libp2p peers: {network?.status === 'unavailable' ? 'unavailable' : (network?.connected_peer_count ?? 'checking…')}. Last portal refresh: {lastUpdated ? new Date(lastUpdated).toLocaleTimeString() : 'checking…'}.</p>
+        </section>
       </div>
 
       <section className={styles.card}><div className={styles.sectionHeading}><div><div className={styles.eyebrow}>RECENT ACTIVITY</div><h2>Your tasks</h2></div><select aria-label="Filter tasks" value={taskFilter} onChange={(e) => setTaskFilter(e.target.value)} className={styles.filterSelect}><option value="all">All statuses</option><option value="pending">Pending</option><option value="allocated">Assigned</option><option value="running">Running</option><option value="completed">Completed</option><option value="failed">Failed</option></select></div>

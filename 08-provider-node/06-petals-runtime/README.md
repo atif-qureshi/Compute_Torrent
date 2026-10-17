@@ -1,59 +1,75 @@
 # Petals distributed inference runtime
 
-This is the project's real Petals-compatible model-parallel execution path.
-It launches the upstream Petals block server and generation client. Petals
-servers announce contiguous Transformer block ranges, measure throughput,
-rebalance block ownership, keep inference KV state, and route hidden states.
-This is separate from ComputeTorrent's existing GGUF/WebTorrent full-model
-provider path; the GGUF format is not used by Petals.
+The local Compose stack runs a private Hivemind DHT and authenticated
+generation gateway. The provider desktop app builds the pinned Petals runtime
+image locally and starts a resource-limited worker container for each assigned
+layer range. Upstream Petals hosts contiguous Transformer blocks, reports
+throughput, keeps inference KV state, and routes hidden states.
 
-## Requirements
+## Portal workflow
 
-- Python 3.10 or newer, preferably Linux or WSL2. Upstream Petals documents
-  Windows use through WSL.
-- Install a hardware-appropriate PyTorch build, then install
-  `requirements-petals.txt` in a dedicated environment on each serving PC.
-- Use one identical, Petals-supported Hugging Face model id and revision on all
-  peers. The model weights are downloaded by Petals and are not included here.
-- Open the chosen TCP listen port between trusted machines. Public swarm mode
-  exposes requests to unrelated operators; do not send private prompts to it.
+From the repository root, start the local Compose stack with
+`.\Start-ComputeTorrent.ps1 -WithPetals`, then open `http://localhost:3000/inference`. At
+least two provider apps must be connected. On each, opt in to “Share model
+layers” and install the CPU or NVIDIA runtime. Upload a JSON or XML manifest
+using `bigscience/bloom-560m` or `bigscience/bloomz-560m`. `revision: "main"`
+resolves to a fixed Hub commit before workers are assigned. Providers download
+and cache weights automatically; the submitter does not handle weight files or
+send its raw prompt to layer providers. The coordinator downloads weights too
+for local reference verification, so it needs spare RAM and internet access.
+This pilot runs one distributed job at a time with up to 128 output tokens.
 
-## Start a private swarm on the coordinator/first provider
+Example JSON:
 
-```powershell
-python server.py --model bigscience/bloom-560m --swarm-mode new --port 31330 --device auto
+```json
+{
+  "model_id": "bigscience/bloomz-560m",
+  "revision": "main",
+  "prompt": "Explain volunteer computing in one sentence.",
+  "max_new_tokens": 32,
+  "min_peers": 2,
+  "max_peers": 4,
+  "benchmark": false
+}
 ```
 
-Keep this process running. Copy the Petals DHT multiaddr printed during startup
-from its logs. Other providers join the same `--model` and must bootstrap with
-that address:
+The XML format uses the same field names as flat child elements under
+`<inference>`. The format validator rejects unknown fields, duplicate JSON keys,
+XML entities and DTDs.
 
-```powershell
-python server.py --model bigscience/bloom-560m --swarm-mode join --initial-peer "/ip4/COORDINATOR-LAN-IP/tcp/31330/p2p/PEER_ID" --port 31330 --device auto
-```
+The provider app shows CPU, GPU, VRAM, RAM, operating system and disk capacity.
+Only capacity metrics are reported; the app does not scan personal files.
+Allow trusted LAN TCP ports 8001, 31330 and 31331. The coordinator's advertised
+address must be its private LAN IPv4 address, not `127.0.0.1`.
 
-Petals chooses block ranges according to available memory and its measured
-throughput. `--num-blocks` can cap a node's contribution. The model must have
-enough total eligible memory across peers to provide a complete block chain.
-Use `--swarm-mode public` to join Petals' public DHT; this is not the same as a
-private ComputeTorrent network.
+## Verification boundary
 
-## Run inference through those peers
+The generation client commits real stage-boundary activations, chooses a fresh
+challenge after the commitment, then compares every generated stage boundary
+with a full local reference-model replay. A second random hidden canary prompt goes through the same peer layers
+and local replay. A mismatch fails the job and does not receive a verified
+result. The receipt labels this `local-boundary-replay-v1`; it is a
+VeriLLM-inspired local check, not the complete on-chain VeriLLM protocol, a
+blockchain settlement, or a dispute system. The local verifier is trusted and
+uses numeric activation tolerances; the route and challenges are recorded in
+the downloadable receipt.
 
-```powershell
-python client.py --model bigscience/bloom-560m --initial-peer "/ip4/COORDINATOR-LAN-IP/tcp/31330/p2p/PEER_ID" --prompt "Explain distributed computing in one paragraph." --max-new-tokens 64
-```
+`benchmark: true` also times a full-model CPU reference generation on the
+coordinator. Use `min_peers` and `max_peers` with the same value to require an
+exact provider count, and run `11-evaluation-benchmark/run_petals_experiment.py`
+for repeated 2/4-peer jobs. `export_petals_runs.py` exports the measured job
+records and group summaries without raw prompts. No speedup claim is made
+unless both runs generated the same number of tokens.
 
-The generation client keeps tokenization/sampling local and requests each
-generation step from the Petals-distributed model. Petals chooses a live route
-and reports it in client logs. Upstream Petals handles session KV caches,
-throughput-based rebalancing, and retry/rerouting behavior.
+Model Studio jobs appear in that page's job history and do not use the existing
+GGUF task history or demo credits. Root `/api/tasks` continues to run the full
+GGUF model on one provider.
 
-## Current project boundary
+## Manual upstream tools
 
-These scripts are a separate real Petals runtime; they do not yet connect to
-the portal's `/api/tasks` or ComputeTorrent's provider WebSocket. Do not mark a
-portal task as Petals-distributed until a gateway, model catalog, task receipts,
-and end-to-end result persistence are connected. The current portal's GGUF
-workflow remains single-provider inference. Petals server/client security and
-privacy inherit upstream behavior; public peers can process prompt activations.
+`server.py` and `client.py` remain command-line tools for development outside
+the portal path. Use Python 3.10+ in Linux or WSL2. Install a hardware-matched
+PyTorch build and then `requirements-petals.txt`. Start the first node with
+`--swarm-mode new`; join other nodes with its printed Petals DHT multiaddr.
+The runtime's `public` mode joins the Petals public DHT. Other operators then
+process prompt activations, so do not use it for private inputs.

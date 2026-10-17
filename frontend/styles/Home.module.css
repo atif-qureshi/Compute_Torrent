@@ -1,4 +1,4 @@
-﻿.container {
+.container {
   min-height: 100vh;
   padding: 0 0.5rem;
   background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
@@ -306,7 +306,7 @@
 .statCard span, .statCard small { display: block; color: #91a0bd; font-size: 10px; letter-spacing: .1em; font-weight: 700; }
 .statCard strong { display: block; color: #f4f7ff; font-size: 30px; margin: 9px 0 3px; }
 .statCard small { letter-spacing: 0; text-transform: none; font-weight: 400; font-size: 11px; }
-.workspaceGrid { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(290px, .75fr); align-items: start; gap: 16px; }
+.workspaceGrid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(280px, .85fr); align-items: start; gap: 16px; }
 .sideColumn { display: grid; gap: 16px; }
 .card { background: rgba(16, 22, 35, .9); border-color: #26334c; border-radius: 14px; padding: clamp(18px, 2.5vw, 28px); max-width: none; margin: 0; box-shadow: 0 12px 40px rgba(0,0,0,.12); }
 .card h2 { color: #f1f5ff; font-size: 19px; margin: 0; }
