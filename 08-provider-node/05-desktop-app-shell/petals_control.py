@@ -38,15 +38,14 @@ class PetalsControl:
 
     def capabilities(self):
         try:
-            command(["docker", "image", "inspect", CPU_IMAGE, "--format", "{{.Id}}"])
+            command(["docker", "image", "inspect", CPU_IMAGE, "--format", "{{.Id}}"], timeout=3)
             ready = True
         except Exception:
             ready = False
         cuda = False
         try:
-            command(["docker", "image", "inspect", CUDA_IMAGE, "--format", "{{.Id}}"])
-            cuda = command(["docker", "run", "--rm", "--network", "none", "--gpus", "all", CUDA_IMAGE,
-                            "python", "-c", "import torch; print(torch.cuda.is_available())"], timeout=40) == "True"
+            command(["docker", "image", "inspect", CUDA_IMAGE, "--format", "{{.Id}}"], timeout=3)
+            cuda = True
         except Exception:
             pass
         return {"petals_image_ready": ready, "petals_cuda_ready": cuda}

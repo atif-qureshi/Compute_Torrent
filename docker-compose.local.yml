@@ -105,6 +105,8 @@ services:
       COMPUTETORRENT_PROVIDER_LAN_HOST: ${COMPUTETORRENT_LIBP2P_ADVERTISE_HOST:-127.0.0.1}
     ports:
       - "${COMPUTETORRENT_PORTAL_BIND_IP:-127.0.0.1}:3000:3000"
+    volumes:
+      - ./runtime:/app/runtime:ro
     networks:
       - computetorrent
     restart: unless-stopped

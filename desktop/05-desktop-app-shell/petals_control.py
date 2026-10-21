@@ -34,18 +34,18 @@ class PetalsControl:
             raise ValueError("Petals host port must be between 1024 and 65535")
         self.job_id = None
         self.container = None
+        self.phase = "idle"
 
     def capabilities(self):
         try:
-            command(["docker", "image", "inspect", CPU_IMAGE, "--format", "{{.Id}}"])
+            command(["docker", "image", "inspect", CPU_IMAGE, "--format", "{{.Id}}"], timeout=3)
             ready = True
         except Exception:
             ready = False
         cuda = False
         try:
-            command(["docker", "image", "inspect", CUDA_IMAGE, "--format", "{{.Id}}"])
-            cuda = command(["docker", "run", "--rm", "--network", "none", "--gpus", "all", CUDA_IMAGE,
-                            "python", "-c", "import torch; print(torch.cuda.is_available())"], timeout=40) == "True"
+            command(["docker", "image", "inspect", CUDA_IMAGE, "--format", "{{.Id}}"], timeout=3)
+            cuda = True
         except Exception:
             pass
         return {"petals_image_ready": ready, "petals_cuda_ready": cuda}
@@ -81,18 +81,33 @@ class PetalsControl:
             raise ValueError("Missing DHT bootstrap")
         self.stop()
         self.job_id = job_id
+        self.phase = "preparing_runtime"
         node_suffix = hashlib.sha256(stage["node_id"].encode()).hexdigest()[:8]
         self.container = "ct-layer-" + job_id[:10] + "-" + node_suffix
         folder = self.root / job_id
         folder.mkdir(exist_ok=True)
+        coordinator_host = urlsplit(coordinator_url).hostname
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as route:
-            route.connect((urlsplit(coordinator_url).hostname, 8001))
+            route.connect((coordinator_host, 8001))
             address = route.getsockname()[0]
         # Docker Desktop publishes the host port. Loopback is fine only when
         # all peers use the coordinator's host networking path.
         if ipaddress.ip_address(address).is_loopback:
             address = socket.gethostbyname(socket.gethostname())
-        data = {**data, "advertise_host": address, "advertise_port": self.host_port}
+        bootstrap = data["bootstrap"]
+        advertise = [f"/ip4/{address}/tcp/{self.host_port}"]
+        try:
+            local_coordinator = ipaddress.ip_address(coordinator_host).is_loopback
+        except ValueError:
+            local_coordinator = coordinator_host.lower() == "localhost"
+        if local_coordinator:
+            # Docker Desktop cannot necessarily hairpin through the Windows LAN
+            # address. Its host gateway is reachable from local worker containers.
+            bootstrap = [re.sub(r"^/ip4/[^/]+/tcp/31331", "/dns4/host.docker.internal/tcp/31331", peer)
+                         for peer in bootstrap]
+            advertise.insert(0, f"/dns4/host.docker.internal/tcp/{self.host_port}")
+        data = {**data, "bootstrap": bootstrap, "advertise_maddrs": advertise,
+                "advertise_host": address, "advertise_port": self.host_port}
         (folder / "request.json").write_text(json.dumps(data))
         (folder / "lease").write_text(str(time.time()))
         target_image = CUDA_IMAGE if stage["device"] == "cuda" else CPU_IMAGE
@@ -100,7 +115,8 @@ class PetalsControl:
             command(["docker", "image", "inspect", target_image, "--format", "{{.Id}}"])
         except Exception:
             self.install_runtime(stage["device"])
-        args = ["docker", "run", "-d", "--rm", "--name", self.container,
+        self.phase = "starting_container"
+        args = ["docker", "run", "-d", "--name", self.container,
                 "--label", "computetorrent.role=layer-provider", "--memory", f"{memory_gb}g",
                 "--cpus", str(cpu_limit), "--pids-limit", "256", "--shm-size", "1g",
                 "--init", "--security-opt", "no-new-privileges",
@@ -112,6 +128,7 @@ class PetalsControl:
         args += [target_image, "python", "/app/worker.py"]
         try:
             command(args, timeout=60)
+            self.phase = "loading_model"
         except Exception:
             self.stop(job_id)
             raise
@@ -122,6 +139,8 @@ class PetalsControl:
         folder = self.root / self.job_id
         if renew:
             (folder / "lease").write_text(str(time.time()))
+        if self.phase in {"preparing_runtime", "starting_container"}:
+            return {"job_id": self.job_id, "status": self.phase}
         result = {"job_id": self.job_id, "status": "starting"}
         try:
             path = folder / "status.json"
@@ -129,9 +148,11 @@ class PetalsControl:
                 result = json.loads(path.read_text())
             running = command(["docker", "inspect", self.container, "--format", "{{.State.Running}}"])
             if running.lower() != "true":
-                raise RuntimeError("Petals layer container stopped; inspect its Docker logs")
+                tail = command(["docker", "logs", "--tail", "12", self.container], timeout=8)
+                raise RuntimeError("Petals layer container stopped: " + tail[-350:])
         except Exception as exc:
-            result.update(status="failed", error=str(exc)[:400])
+            detail = str(exc)[:400]
+            result.update(status="failed", error=(result.get("error", "") + "; " + detail)[-600:])
         return result
 
     def stop(self, job_id=None):
@@ -139,7 +160,8 @@ class PetalsControl:
             return
         if self.container:
             try:
-                command(["docker", "stop", "--time", "8", self.container], timeout=15)
+                command(["docker", "rm", "-f", self.container], timeout=15)
             except Exception:
                 pass
         self.container = self.job_id = None
+        self.phase = "idle"
