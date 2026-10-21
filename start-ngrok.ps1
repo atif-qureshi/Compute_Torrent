@@ -34,9 +34,9 @@ if ($AuthToken) {
 Write-Host "🚀 Launching Ngrok HTTP Tunnel for Port 8001..." -ForegroundColor Green
 $proc = Start-Process -FilePath $ngrok -ArgumentList "http 8001 --log=stdout" -PassThru -WindowStyle Hidden
 
-Write-Host "⏳ Waiting for tunnel allocation..." -ForegroundColor Yellow
+Write-Host "⏳ Waiting for tunnel allocation (up to 45s)..." -ForegroundColor Yellow
 $publicUrl = ""
-for ($i = 0; $i -lt 12; $i++) {
+for ($i = 0; $i -lt 45; $i++) {
     Start-Sleep -Seconds 1
     try {
         $api = Invoke-RestMethod -Uri "http://127.0.0.1:4040/api/tunnels" -TimeoutSec 2 -ErrorAction Stop
@@ -48,7 +48,7 @@ for ($i = 0; $i -lt 12; $i++) {
             }
         }
     } catch {
-        # Waiting for agent
+        # Waiting for agent handshake
     }
 }
 
@@ -62,6 +62,13 @@ if ($publicUrl) {
         ws_url = $wsUrl
         created_at = (Get-Date).ToString("o")
     } | ConvertTo-Json | Set-Content -Path $tunnelFile -Encoding utf8
+
+    try {
+        docker exec computetorrent-portal mkdir -p /app/runtime 2>$null | Out-Null
+        docker cp $tunnelFile computetorrent-portal:/app/runtime/public_tunnel.json 2>$null | Out-Null
+    } catch {
+        # Optional sync
+    }
     
     Write-Host "`n=======================================================" -ForegroundColor Green
     Write-Host "✅ GLOBAL PEER TUNNEL ACTIVE!" -ForegroundColor Green

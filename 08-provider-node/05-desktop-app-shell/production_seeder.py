@@ -75,7 +75,18 @@ class ComputeTorrentSeeder(ctk.CTk):
         self.node_binary = os.getenv("COMPUTETORRENT_NODE", "node")
         self.node_id = self.settings.get("node_id")
         self.access_token = self.settings.get("access_token")
-        self.orchestrator_url = self.settings.get("orchestrator_url", DEFAULT_ORCHESTRATOR_URL)
+        self.orchestrator_url = self.settings.get("orchestrator_url")
+        if not self.orchestrator_url or self.orchestrator_url == "ws://127.0.0.1:8001/ws/seeder":
+            tunnel_file = Path(__file__).resolve().parents[2] / "runtime" / "public_tunnel.json"
+            if tunnel_file.is_file():
+                try:
+                    data = json.loads(tunnel_file.read_text(encoding="utf-8"))
+                    if data.get("ws_url"):
+                        self.orchestrator_url = data["ws_url"]
+                except Exception:
+                    pass
+        if not self.orchestrator_url:
+            self.orchestrator_url = DEFAULT_ORCHESTRATOR_URL
         # The network-wide enrollment code is a one-time secret; keep it in
         # memory only and persist only this provider's revocable credential.
         self.enrollment_token = ""
