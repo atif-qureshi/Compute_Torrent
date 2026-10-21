@@ -75,7 +75,11 @@ class Handler(BaseHTTPRequestHandler):
                 if process and process.poll() is None:
                     return self.reply(409, {"detail": "Gateway is busy"})
                 active_id = data["id"]
-                data["bootstrap"] = bootstrap
+                # The inference child runs in this container. Connect it to the
+                # local DHT listener; Docker Desktop may not hairpin via the
+                # coordinator's published LAN address.
+                data["bootstrap"] = [re.sub(r"^/ip4/[^/]+/tcp/31331", "/ip4/127.0.0.1/tcp/31331", peer)
+                                     for peer in bootstrap]
                 request = ROOT / (active_id + ".request.json")
                 request.write_text(json.dumps(data))
                 with (ROOT / (active_id + ".log")).open("w") as log:

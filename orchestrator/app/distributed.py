@@ -10,8 +10,8 @@ import urllib.request
 import uuid
 from pathlib import Path
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
-from typing import Any, Union
+from pydantic import BaseModel, StrictStr
+from xml.etree import ElementTree
 
 CATALOG = {
     "bigscience/bloom-560m": {"layers": 24, "hidden_size": 1024, "label": "BLOOM 560M"},
@@ -20,11 +20,9 @@ CATALOG = {
 
 
 def parse_manifest(content, format="json"):
-    if isinstance(content, dict):
-        value = content
-    elif isinstance(content, str):
-        if len(content.encode()) > 65536:
-            raise ValueError("Upload a JSON manifest smaller than 64 KiB")
+    if not isinstance(content, str) or len(content.encode()) > 65536:
+        raise ValueError("Upload a JSON or XML manifest smaller than 64 KiB")
+    if format == "json":
         def unique(pairs):
             result = {}
             for key, val in pairs:
@@ -35,20 +33,46 @@ def parse_manifest(content, format="json"):
         try:
             value = json.loads(content, object_pairs_hook=unique)
         except Exception as exc:
-            raise ValueError(f"Invalid JSON data: {exc}")
+            raise ValueError(f"Invalid JSON data: {exc}") from exc
+    elif format == "xml":
+        if re.search(r"<!DOCTYPE|<!ENTITY", content, re.I):
+            raise ValueError("XML DTDs and entities are not supported")
+        try:
+            root = ElementTree.fromstring(content)
+        except ElementTree.ParseError as exc:
+            raise ValueError(f"Invalid XML data: {exc}") from exc
+        if root.tag != "inference" or root.attrib:
+            raise ValueError("XML root must be <inference> without attributes")
+        value = {}
+        for child in root:
+            if child.tag in value or child.attrib or len(child):
+                raise ValueError("Use unique, flat XML fields without attributes")
+            value[child.tag] = child.text or ""
+        for key in ("max_new_tokens", "min_peers", "max_peers"):
+            if key in value:
+                try:
+                    value[key] = int(value[key])
+                except ValueError as exc:
+                    raise ValueError(f"{key} must be an integer") from exc
+        if "benchmark" in value:
+            if value["benchmark"].strip().lower() not in {"true", "false"}:
+                raise ValueError("benchmark must be true or false")
+            value["benchmark"] = value["benchmark"].strip().lower() == "true"
     else:
-        raise ValueError("Upload a JSON manifest smaller than 64 KiB")
-    allowed_keys = {"model_id", "revision", "prompt", "max_new_tokens", "min_peers", "max_peers", "benchmark", "layers", "hidden_size"}
+        raise ValueError("Choose JSON or XML")
+    allowed_keys = {"model_id", "revision", "prompt", "max_new_tokens", "min_peers", "max_peers", "benchmark"}
     if not isinstance(value, dict) or set(value) - allowed_keys:
-        raise ValueError(f"Allowed JSON fields: {', '.join(sorted(allowed_keys))}")
-    model_id = str(value.get("model_id", "")).strip()
-    if not model_id:
-        raise ValueError("model_id is required in JSON")
+        raise ValueError(f"Allowed fields: {', '.join(sorted(allowed_keys))}")
+    model_id = value.get("model_id")
+    if model_id not in CATALOG:
+        raise ValueError("This Petals pilot supports bigscience/bloom-560m and bigscience/bloomz-560m; other architectures need an implemented runtime adapter")
     prompt = value.get("prompt")
     if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 4000:
         raise ValueError("Prompt must contain 1–4000 characters")
-    revision = str(value.get("revision", "main")).strip() or "main"
-    for name, default, lo, hi in (("max_new_tokens", 32, 1, 512), ("min_peers", 1, 1, 8), ("max_peers", 8, 1, 8)):
+    revision = value.get("revision", "main")
+    if not isinstance(revision, str) or not re.fullmatch(r"main|[a-f0-9]{40}", revision):
+        raise ValueError("Revision must be main or an immutable 40-character commit SHA")
+    for name, default, lo, hi in (("max_new_tokens", 32, 1, 128), ("min_peers", 2, 2, 8), ("max_peers", 8, 2, 8)):
         val = value.get(name, default)
         if type(val) is not int or not lo <= val <= hi:
             raise ValueError(f"{name} must be an integer from {lo} to {hi}")
@@ -61,84 +85,52 @@ def parse_manifest(content, format="json"):
     return {**value, "model_id": model_id, "revision": revision, "prompt": prompt.strip()}
 
 
-KNOWN_REVISIONS = {
-    ("bigscience/bloom-560m", "main"): "ac2ae5fab2ce3f9f40dc79b5ca9f637430d24971",
-    ("bigscience/bloomz-560m", "main"): "a2845d7e13dd12efae154a9f1c63fcc2e0cc4b05",
-}
-
-
 def resolve_revision(spec):
-    model_id = spec["model_id"]
-    revision = str(spec.get("revision", "main")).strip() or "main"
-    meta = CATALOG.get(model_id, {})
-    layers = int(spec.get("layers") or meta.get("layers", 24))
-    hidden_size = int(spec.get("hidden_size") or meta.get("hidden_size", 1024))
-    label = spec.get("label") or meta.get("label", model_id.split("/")[-1])
+    url = f"https://huggingface.co/api/models/{spec['model_id']}/revision/{spec['revision']}"
+    try:
+        with urllib.request.urlopen(url, timeout=30) as response:
+            metadata = json.load(response)
+    except Exception as exc:
+        raise RuntimeError(f"Could not resolve model revision from Hugging Face: {exc}") from exc
+    sha = metadata.get("sha", "")
+    if not re.fullmatch(r"[a-f0-9]{40}", sha):
+        raise RuntimeError("Hugging Face returned no immutable model revision")
+    return {**spec, "revision": sha, **CATALOG[spec["model_id"]]}
 
-    known = KNOWN_REVISIONS.get((model_id, revision))
-    sha = known or revision
-    if not known and re.fullmatch(r"[a-f0-9]{40}", revision):
-        sha = revision
-    elif not known:
-        try:
-            url = f"https://huggingface.co/api/models/{model_id}/revision/{revision}"
-            with urllib.request.urlopen(url, timeout=5) as response:
-                metadata = json.load(response)
-            s = metadata.get("sha", "")
-            if re.fullmatch(r"[a-f0-9]{40}", s):
-                sha = s
-        except Exception:
-            pass
-        if model_id not in CATALOG and "layers" not in spec:
-            try:
-                cfg_url = f"https://huggingface.co/{model_id}/raw/{sha}/config.json"
-                with urllib.request.urlopen(cfg_url, timeout=5) as resp:
-                    cfg = json.load(resp)
-                    layers = cfg.get("num_hidden_layers", cfg.get("n_layer", cfg.get("num_layers", layers)))
-                    hidden_size = cfg.get("hidden_size", cfg.get("d_model", cfg.get("n_embd", hidden_size)))
-            except Exception:
-                pass
-    return {**spec, "revision": sha, "layers": layers, "hidden_size": hidden_size, "label": label}
 
 
 def placement(spec, peers):
-    """Distribute model layers dynamically across connected systems according to their capacities."""
+    """Allocate only capacity that a current, opted-in provider actually reported."""
     candidates = []
     for node, info in peers.items():
         profile = info.get("profile", {})
-        if info.get("busy") or info.get("state") in {"paused", "offline"} or profile.get("canary_quarantined"):
+        if info.get("busy") or info.get("state") in {"paused", "offline", "busy"} or profile.get("canary_quarantined"):
             continue
-        if profile.get("petals_enabled") is False or profile.get("docker_ok") is False:
+        if profile.get("petals_enabled") is not True or profile.get("docker_ok") is not True or profile.get("petals_protocol_version") != 1:
             continue
-        
-        # Calculate available memory
-        ram = float(profile.get("free_ram_gb") or 0)
-        if ram < 1.0:
-            ram = max(float(profile.get("RAM") or 4) * 0.6, 2.0)
-        if profile.get("memory_limit_gb"):
-            try:
-                ram = min(ram, float(profile["memory_limit_gb"]))
-            except (ValueError, TypeError):
-                pass
-        
-        cuda = bool(profile.get("petals_cuda_ready") or profile.get("CUDA"))
-        memory = min(ram * 1024, float(profile.get("gpu_free_mib") or 0)) if (cuda and profile.get("gpu_free_mib")) else ram * 1024
+        try:
+            ram = min(float(profile["free_ram_gb"]), float(profile["memory_limit_gb"]))
+            disk = float(profile["disk_free_gb"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if ram < 2 or disk < 4:
+            continue
+        cuda = bool(profile.get("petals_cuda_ready") and float(profile.get("gpu_free_mib") or 0) >= 2048)
+        memory = min(ram * 1024, float(profile.get("gpu_free_mib") or 0)) if cuda else ram * 1024
         per_block = math.ceil(12 * spec["hidden_size"] ** 2 * 4 / 2**20) + 24
-        cap = max(1, min(spec["layers"], int((memory * 0.85) / per_block)))
-        candidates.append({"node_id": node, "capacity": cap, "device": "cuda" if cuda else "cpu", "count": 0})
+        cap = max(0, min(spec["layers"], int((memory * 0.75 - 768) / per_block)))
+        if cap:
+            candidates.append({"node_id": node, "capacity": cap, "device": "cuda" if cuda else "cpu", "count": 0})
     
     candidates.sort(key=lambda x: (-x["capacity"], x["node_id"]))
-    max_p = spec.get("max_peers", 8)
-    candidates = candidates[:max_p]
-    min_p = spec.get("min_peers", 1)
+    candidates = candidates[:spec.get("max_peers", 8)]
+    min_p = spec.get("min_peers", 2)
     if len(candidates) < min_p:
         raise ValueError(f"Need at least {min_p} connected layer provider(s), but found {len(candidates)}")
     
-    # Ensure total candidate capacity covers all layers
     total_cap = sum(c["capacity"] for c in candidates)
     if total_cap < spec["layers"]:
-        for c in candidates:
-            c["capacity"] = max(c["capacity"], math.ceil(spec["layers"] / len(candidates)))
+        raise ValueError(f"Connected providers can host {total_cap} of {spec['layers']} layers; free more RAM or connect another capable PC")
     
     for _ in range(spec["layers"]):
         c = min((c for c in candidates if c["count"] < c["capacity"]), key=lambda c: c["count"] / c["capacity"])
@@ -185,8 +177,8 @@ class Store:
 
 
 class Upload(BaseModel):
-    content: Union[str, dict, Any]
-    format: str = "json"
+    content: StrictStr
+    format: StrictStr = "json"
 
 
 def install(app, manager):
@@ -211,7 +203,25 @@ def install(app, manager):
             state = await asyncio.to_thread(gateway, "/health")
         except Exception:
             state = {"status": "unavailable", "detail": "Start the Petals gateway with the local Compose stack"}
-        return {**state, "providers": [{"node_id": n, **i} for n, i in manager.seeder_info.items() if n in manager.active_seeders]}
+        providers = []
+        for node, info in manager.seeder_info.items():
+            if node not in manager.active_seeders:
+                continue
+            profile = info.get("profile", {})
+            reason = None
+            if profile.get("petals_protocol_version") != 1:
+                reason = "Install the latest provider app and reconnect"
+            elif profile.get("petals_enabled") is not True:
+                reason = "Enable Share model layers in the provider app"
+            elif profile.get("docker_ok") is not True:
+                reason = "Start Docker Desktop on this provider"
+            elif info.get("busy") or info.get("state") in {"paused", "busy"}:
+                reason = "Provider is busy or paused"
+            elif float(profile.get("free_ram_gb") or 0) < 2 or float(profile.get("disk_free_gb") or 0) < 4:
+                reason = "Needs at least 2 GB free RAM and 4 GB free disk"
+            providers.append({"node_id": node, **info, "layer_ready": reason is None, "layer_reason": reason,
+                              "runtime_installed": bool(profile.get("petals_image_ready"))})
+        return {**state, "providers": providers}
 
     @router.get("/jobs")
     async def jobs():
@@ -231,7 +241,8 @@ def install(app, manager):
                 raise RuntimeError("Petals DHT gateway is not ready")
             peers = {n: i for n, i in manager.seeder_info.items() if n in manager.active_seeders}
             plan = placement(job["spec"], peers)
-            job.update(plan=plan, status="loading", prefix="ct-" + job["id"])
+            job.update(plan=plan, status="loading", prefix="ct-" + job["id"],
+                       stage_status={stage["node_id"]: {"status": "assigning"} for stage in plan})
             store.save(job)
             for stage in plan:
                 manager.seeder_info[stage["node_id"]]["busy"] = True
@@ -242,6 +253,8 @@ def install(app, manager):
                     "bootstrap": health["bootstrap"]}, stage["node_id"])
                 if not ok:
                     raise RuntimeError("Provider disconnected before layer assignment")
+                job["stage_status"][stage["node_id"]] = {"status": "sent"}
+                store.save(job)
             # Never interpret container startup as model readiness. The gateway
             # checks actual DHT layer coverage before opening inference sessions.
             deadline = time.monotonic() + 900
@@ -252,13 +265,16 @@ def install(app, manager):
                         raise RuntimeError("A layer provider disconnected; resubmit after reconnecting")
                     p = manager.seeder_info[stage["node_id"]].get("profile", {}).get("petals", {})
                     if p.get("job_id") == job["id"]:
+                        job["stage_status"][stage["node_id"]] = p
                         if p.get("error"):
                             raise RuntimeError(f"Provider {stage['node_id']}: {p['error']}")
                         if p.get("peer_id"):
+                            job["stage_status"][stage["node_id"]] = {**p, "status": "serving"}
                             ready.append({**stage, "peer_id": p["peer_id"]})
                 if len(ready) == len(plan):
                     job["plan"] = ready
                     break
+                store.save(job)
                 await asyncio.sleep(2)
             else:
                 raise RuntimeError("Timed out waiting for provider model downloads/startup (15 minutes)")
@@ -300,8 +316,7 @@ def install(app, manager):
             raise HTTPException(409, "One distributed job at a time is supported by this small-model workspace")
         try:
             spec = parse_manifest(upload.content, upload.format)
-            model_meta = CATALOG.get(spec["model_id"], {"layers": spec.get("layers", 24), "hidden_size": spec.get("hidden_size", 1024), "label": spec.get("label", spec["model_id"].split("/")[-1])})
-            placement({**spec, **model_meta},
+            placement({**spec, **CATALOG[spec["model_id"]]},
                       {n: i for n, i in manager.seeder_info.items() if n in manager.active_seeders})
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc

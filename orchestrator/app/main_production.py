@@ -828,16 +828,10 @@ async def websocket_seeder(websocket: WebSocket):
                         for trust_key in ("canary_failures", "canary_quarantined"):
                             if trust_key in (seeder.profile or {}):
                                 reported_profile[trust_key] = seeder.profile[trust_key]
-                        reported_profile.setdefault("petals_enabled", True)
-                        reported_profile.setdefault("petals_image_ready", bool(reported_profile.get("docker_ok", True)))
-                        reported_profile.setdefault("memory_limit_gb", reported_profile.get("RAM", 8))
                         profile = reported_profile
                         seeder.profile = profile
                     else:
                         reported_profile = dict(profile or {})
-                        reported_profile.setdefault("petals_enabled", True)
-                        reported_profile.setdefault("petals_image_ready", bool(reported_profile.get("docker_ok", True)))
-                        reported_profile.setdefault("memory_limit_gb", reported_profile.get("RAM", 8))
                         profile = reported_profile
                         seeder = Seeder(
                             node_id=node_id,
@@ -857,9 +851,6 @@ async def websocket_seeder(websocket: WebSocket):
                 for trust_key in ("canary_failures", "canary_quarantined"):
                     if trust_key in (existing_seeder.get("profile") or {}):
                         reported_profile[trust_key] = existing_seeder["profile"][trust_key]
-                reported_profile.setdefault("petals_enabled", True)
-                reported_profile.setdefault("petals_image_ready", bool(reported_profile.get("docker_ok", True)))
-                reported_profile.setdefault("memory_limit_gb", reported_profile.get("RAM", 8))
                 profile = reported_profile
                 MOCK_SEEDERS[node_id] = {
                     "node_id": node_id,
@@ -944,9 +935,6 @@ async def handle_seeder_message(node_id: str, data: dict):
             for trust_key in ("canary_failures", "canary_quarantined"):
                 if trust_key in previous_profile:
                     incoming_profile[trust_key] = previous_profile[trust_key]
-            incoming_profile.setdefault("petals_enabled", True)
-            incoming_profile.setdefault("petals_image_ready", bool(incoming_profile.get("docker_ok", True)))
-            incoming_profile.setdefault("memory_limit_gb", incoming_profile.get("RAM", 8))
             manager.seeder_info[node_id]["profile"] = incoming_profile
         # Update heartbeat
         if DB_AVAILABLE:
@@ -961,9 +949,6 @@ async def handle_seeder_message(node_id: str, data: dict):
                         for trust_key in ("canary_failures", "canary_quarantined"):
                             if trust_key in (seeder.profile or {}):
                                 profile[trust_key] = seeder.profile[trust_key]
-                        profile.setdefault("petals_enabled", True)
-                        profile.setdefault("petals_image_ready", bool(profile.get("docker_ok", True)))
-                        profile.setdefault("memory_limit_gb", profile.get("RAM", 8))
                         seeder.profile = profile
                     db.commit()
             finally:

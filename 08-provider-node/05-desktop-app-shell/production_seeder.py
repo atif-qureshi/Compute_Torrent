@@ -92,7 +92,8 @@ class ComputeTorrentSeeder(ctk.CTk):
         self.profile.update(hardware_details())
         self.profile.update(self.petals.capabilities())
         self.profile.update(gpu_telemetry())
-        self.profile.update(petals_enabled=self.petals_enabled, memory_limit_gb=self.memory_limit_gb, cpu_limit=self.cpu_limit)
+        self.profile.update(petals_enabled=self.petals_enabled, petals_protocol_version=1,
+                            memory_limit_gb=self.memory_limit_gb, cpu_limit=self.cpu_limit)
         if had_legacy_join_code:
             self.save_settings()
         self.protocol("WM_DELETE_WINDOW", self.close_application)
@@ -340,7 +341,8 @@ class ComputeTorrentSeeder(ctk.CTk):
             try:
                 self.petals.install_runtime(device, progress=report)
                 self.profile.update(self.petals.capabilities())
-                self.profile.update(petals_enabled=self.petals_enabled, cpu_limit=self.cpu_limit, memory_limit_gb=self.memory_limit_gb)
+                self.profile.update(petals_enabled=self.petals_enabled, petals_protocol_version=1,
+                                    cpu_limit=self.cpu_limit, memory_limit_gb=self.memory_limit_gb)
                 self.after(0, lambda: self.runtime_label.configure(
                     text=f"Petals CPU runtime: {'installed' if self.profile.get('petals_image_ready') else 'not installed'} · CUDA runtime: {'ready' if self.profile.get('petals_cuda_ready') else 'not installed or not available'}"))
                 report(f"{device.upper()} Petals runtime is installed. Enable layer sharing and reconnect.")
@@ -372,7 +374,8 @@ class ComputeTorrentSeeder(ctk.CTk):
     def start_connection(self):
         """Start connection to orchestrator"""
         self.petals_enabled = bool(self.layer_switch.get())
-        self.profile.update(petals_enabled=self.petals_enabled, cpu_limit=self.cpu_limit, memory_limit_gb=self.memory_limit_gb)
+        self.profile.update(petals_enabled=self.petals_enabled, petals_protocol_version=1,
+                            cpu_limit=self.cpu_limit, memory_limit_gb=self.memory_limit_gb)
         self.orchestrator_url = self.server_entry.get().strip()
         self.enrollment_token = self.enrollment_entry.get().strip()
         parsed = urlsplit(self.orchestrator_url)
@@ -569,7 +572,8 @@ class ComputeTorrentSeeder(ctk.CTk):
         self.profile["free_ram_gb"] = round(memory.available / (1024 ** 3), 1)
         self.profile["cpu_load_pct"] = round(psutil.cpu_percent(interval=None), 1)
         self.profile["uptime_seconds"] = int(time.time() - psutil.boot_time())
-        self.profile.update(petals_enabled=self.petals_enabled, memory_limit_gb=self.memory_limit_gb, cpu_limit=self.cpu_limit)
+        self.profile.update(petals_enabled=self.petals_enabled, petals_protocol_version=1,
+                            memory_limit_gb=self.memory_limit_gb, cpu_limit=self.cpu_limit)
         self.profile.update(await asyncio.to_thread(gpu_telemetry))
         self.profile["petals"] = await asyncio.to_thread(self.petals.status, self.is_connected and not self.paused)
         if hasattr(self, 'layer_label'):

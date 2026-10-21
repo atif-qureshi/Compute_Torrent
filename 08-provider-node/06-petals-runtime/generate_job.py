@@ -27,14 +27,13 @@ def execute(job, progress):
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
     from petals import AutoDistributedModelForCausalLM
-    from hivemind import PeerID
     spec = job["spec"]
     revision = spec.get("revision") if spec.get("revision") != "main" else None
     torch.set_num_threads(2)
     tokenizer = AutoTokenizer.from_pretrained(spec["model_id"], revision=revision, trust_remote_code=True)
     model = AutoDistributedModelForCausalLM.from_pretrained(spec["model_id"], revision=revision,
         initial_peers=job["bootstrap"], dht_prefix=job["prefix"], torch_dtype=torch.float32,
-        allowed_servers=[PeerID.from_base58(s["peer_id"]) for s in job["plan"]],
+        allowed_servers=[s["peer_id"] for s in job["plan"]],
         max_retries=2, request_timeout=60, show_route=True, trust_remote_code=True)
     model.eval()
     model_load_seconds = time.perf_counter() - started
