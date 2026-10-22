@@ -17,7 +17,7 @@ import websockets
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "08-provider-node" / "05-desktop-app-shell"))
-from petals_control import PetalsControl
+from petals_control import PetalsControl, provider_identity
 
 API = "http://127.0.0.1:8001"
 WS = "ws://127.0.0.1:8001/ws/seeder"
@@ -51,7 +51,7 @@ class LocalProvider:
         self.index = index
         self.join_code = join_code
         self.control = PetalsControl(ROOT / "runtime" / f"petals-smoke-{index}", host_port=31330 + index * 2)
-        self.profile = {"petals_enabled": True, "petals_protocol_version": 1,
+        self.profile = {**provider_identity(), "petals_enabled": True, "petals_protocol_version": 1,
                         "petals_image_ready": True, "docker_ok": True,
                         "free_ram_gb": 6, "memory_limit_gb": 4,
                         "disk_free_gb": 10, "RAM": 8, "CPU": 2,

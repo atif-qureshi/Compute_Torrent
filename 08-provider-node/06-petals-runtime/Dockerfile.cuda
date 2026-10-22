@@ -3,6 +3,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /
 WORKDIR /app
 RUN pip install --no-cache-dir 'numpy<2' 'petals @ git+https://github.com/bigscience-workshop/petals.git@22afba627a7eb4fcfe9418c49472c6a51334b8ac'
 ENV HF_HOME=/cache/huggingface PETALS_CACHE=/cache/petals PYTHONUNBUFFERED=1
-COPY gateway.py generate_job.py worker.py ./
+COPY gateway.py generate_job.py worker.py bootstrap_probe.py layer_server.py ./
 EXPOSE 31330
 CMD ["python", "/app/worker.py"]

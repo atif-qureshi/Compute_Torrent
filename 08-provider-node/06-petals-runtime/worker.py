@@ -1,4 +1,5 @@
 """Container entrypoint: run fixed assigned Petals blocks and report peer identity."""
+import asyncio
 import json
 import os
 import re
@@ -8,6 +9,7 @@ import sys
 import time
 import threading
 from pathlib import Path
+from bootstrap_probe import reachable_bootstrap
 
 
 def main():
@@ -26,48 +28,67 @@ def main():
         for addr in advertise_maddrs
     ):
         raise ValueError("Invalid announced provider addresses")
-    state = {"job_id": request["job_id"], "status": "loading", "start": stage["start"], "end": stage["end"]}
+    state = {"job_id": request["job_id"], "status": "connecting", "start": stage["start"],
+             "end": stage["end"], "network_revision": 2, "bootstrap": request["bootstrap"]}
     def save():
         state["updated_at"] = time.time()
         path = Path("/state/status.tmp")
         path.write_text(json.dumps(state))
         path.replace("/state/status.json")
     save()
-    command = [sys.executable, "-m", "petals.cli.run_server", spec["model_id"],
-        "--revision", spec["revision"], "--block_indices", f"{stage['start']}:{stage['end']}",
-        "--dht_prefix", request["prefix"], "--device", stage["device"],
-        "--torch_dtype", "float32", "--quant_type", "none", "--compression", "NONE",
-        "--port", "31330", "--announce_maddrs", *advertise_maddrs,
-        "--inference_max_length", "512", "--attn_cache_tokens", "1024", "--num_handlers", "2",
-        "--max_disk_space", "8GiB", "--throughput", "auto", "--balance_quality", "0",
-        "--initial_peers", *request["bootstrap"]]
-    proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
-    signal.signal(signal.SIGTERM, lambda *_: proc.terminate())
+    proc = None
+    cancelled = threading.Event()
+    def stop(*_):
+        cancelled.set()
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+    signal.signal(signal.SIGTERM, stop)
     def lease_watchdog():
-        while proc.poll() is None:
+        while not cancelled.is_set():
             try:
                 valid = time.time() - float(Path("/state/lease").read_text()) < 90
             except (OSError, ValueError):
                 valid = False
             if not valid:
-                proc.terminate()
+                stop()
                 return
             time.sleep(5)
     threading.Thread(target=lease_watchdog, daemon=True).start()
     try:
+        request["bootstrap"] = asyncio.run(reachable_bootstrap(request["bootstrap"]))
+        state.update(status="loading", bootstrap=request["bootstrap"])
+        request["advertise_maddrs"] = advertise_maddrs
+        Path("/state/request.json").write_text(json.dumps(request))
+        save()
+        if cancelled.is_set():
+            return
+        proc = subprocess.Popen([sys.executable, "/app/layer_server.py"], stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True, bufsize=1)
         for line in proc.stdout:
             print(line, end="", flush=True)
+            if line.startswith("CT_STATUS "):
+                update = json.loads(line[len("CT_STATUS "):])
+                state.update({key: update[key] for key in ("status", "peer_id") if key in update})
+                save()
             if "Running a server on" in line:
                 match = re.search(r"/p2p/([A-Za-z0-9]+)", line)
                 if match:
                     state["peer_id"] = match.group(1)
-                    state["status"] = "serving"
+                    state["status"] = "loading"
                     save()
         code = proc.wait()
-        state.update(status="stopped", error=f"Petals server exited ({code}); inspect provider layer log")
+        if not cancelled.is_set():
+            state.update(status="failed", error=f"Petals server exited ({code}); inspect provider layer log")
+    except Exception as exc:
+        import traceback
+        traceback.print_exc()
+        state.update(status="failed", error=str(exc)[-1500:])
     finally:
-        if proc.poll() is None:
+        if proc is not None and proc.poll() is None:
             proc.terminate()
+        if cancelled.is_set():
+            state.update(status="stopped", error="Provider lease expired or layer task was stopped")
+        cancelled.set()
         save()
 
 

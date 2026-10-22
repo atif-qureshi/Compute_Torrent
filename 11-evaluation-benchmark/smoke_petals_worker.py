@@ -48,8 +48,8 @@ def main():
             if status.get("status") != previous:
                 previous = status.get("status")
                 print("Worker status:", previous, flush=True)
-            if status.get("peer_id"):
-                print("Real worker announced model layer 0 in the private DHT", flush=True)
+            if status.get("peer_id") and status.get("status") == "serving" and status.get("network_revision") == 2:
+                print("Real worker loaded layer 0 and is ready to serve in the private DHT", flush=True)
                 return
             if status.get("error"):
                 raise RuntimeError(status["error"])

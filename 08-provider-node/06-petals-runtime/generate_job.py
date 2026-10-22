@@ -30,11 +30,13 @@ def execute(job, progress):
     spec = job["spec"]
     revision = spec.get("revision") if spec.get("revision") != "main" else None
     torch.set_num_threads(2)
-    tokenizer = AutoTokenizer.from_pretrained(spec["model_id"], revision=revision, trust_remote_code=True)
+    progress("downloading_model")
+    tokenizer = AutoTokenizer.from_pretrained(spec["model_id"], revision=revision, trust_remote_code=False)
+    progress("connecting_layers")
     model = AutoDistributedModelForCausalLM.from_pretrained(spec["model_id"], revision=revision,
         initial_peers=job["bootstrap"], dht_prefix=job["prefix"], torch_dtype=torch.float32,
         allowed_servers=[s["peer_id"] for s in job["plan"]],
-        max_retries=2, request_timeout=60, show_route=True, trust_remote_code=True)
+        max_retries=2, request_timeout=60, show_route=True, trust_remote_code=False)
     model.eval()
     model_load_seconds = time.perf_counter() - started
     remote = getattr(model, "transformer", getattr(model, "model", None))
@@ -110,8 +112,9 @@ def execute(job, progress):
     nonce = secrets.token_hex(32)  # Chosen after generation/commitment.
     samples = sorted(range(len(output)), key=lambda n: digest([nonce, commitment, n]))[:min(4, len(output))]
     progress("verifying")
+    progress("loading_reference")
     reference = AutoModelForCausalLM.from_pretrained(spec["model_id"], revision=revision,
-        torch_dtype=torch.float32, trust_remote_code=True).eval()
+        torch_dtype=torch.float32, trust_remote_code=False).eval()
 
     def replay(original, output, captured):
         context = torch.cat([original, torch.tensor([output[:-1]], dtype=torch.long)], dim=1)

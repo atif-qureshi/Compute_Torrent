@@ -9,6 +9,6 @@ RUN pip install --no-cache-dir /tmp/bitsandbytes-0.41.1-py3-none-any.whl && rm /
 RUN pip install --no-cache-dir --default-timeout=300 --retries 10 --no-build-isolation 'numpy<2' \
     'petals @ git+https://github.com/bigscience-workshop/petals.git@22afba627a7eb4fcfe9418c49472c6a51334b8ac'
 ENV HF_HOME=/cache/huggingface PETALS_CACHE=/cache/petals PYTHONUNBUFFERED=1
-COPY gateway.py generate_job.py worker.py ./
+COPY gateway.py generate_job.py worker.py bootstrap_probe.py layer_server.py ./
 EXPOSE 8002 31330 31331
 CMD ["python", "/app/gateway.py"]

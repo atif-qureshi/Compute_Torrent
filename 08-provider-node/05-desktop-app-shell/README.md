@@ -10,6 +10,8 @@ The Windows Python app connects a volunteer PC to the local coordinator, display
 4. It returns the result over the coordinator WebSocket, receives the verification verdict, and stores a short local contribution history.
 5. Pausing stops new assignments; an already running task can finish. Closing the app closes its connection and stops its local libp2p peer process.
 
+For layer inference on another PC, enter the coordinator's actual private IPv4 address. The app checks TCP 31331 before starting a layer worker and reports a specific firewall/network error if not reachable. It advertises only this PC's LAN address; Docker Desktop's `host.docker.internal` alias is used only when the provider runs on the coordinator PC itself.
+
 For layer inference, install the CPU Petals runtime from the app (or the NVIDIA
 runtime on a CUDA machine), then enable **Share model layers**. The app reports
 CPU model and core counts, available RAM, display adapters, NVIDIA VRAM when

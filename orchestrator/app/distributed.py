@@ -10,69 +10,75 @@ import urllib.request
 import uuid
 from pathlib import Path
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, StrictStr
+from pydantic import BaseModel
+from typing import Union, Dict, Any
 from xml.etree import ElementTree
 
 CATALOG = {
     "bigscience/bloom-560m": {"layers": 24, "hidden_size": 1024, "label": "BLOOM 560M"},
     "bigscience/bloomz-560m": {"layers": 24, "hidden_size": 1024, "label": "BLOOMZ 560M · instructions"},
+    "TinyLlama/TinyLlama-1.1B-Chat-v1.0": {"layers": 22, "hidden_size": 2048, "label": "TinyLlama 1.1B Chat"},
 }
+PETALS_NETWORK_REVISION = 2
 
 
 def parse_manifest(content, format="json"):
-    if not isinstance(content, str) or len(content.encode()) > 65536:
-        raise ValueError("Upload a JSON or XML manifest smaller than 64 KiB")
-    if format == "json":
-        def unique(pairs):
-            result = {}
-            for key, val in pairs:
-                if key in result:
-                    raise ValueError(f"Duplicate field: {key}")
-                result[key] = val
-            return result
-        try:
-            value = json.loads(content, object_pairs_hook=unique)
-        except Exception as exc:
-            raise ValueError(f"Invalid JSON data: {exc}") from exc
-    elif format == "xml":
-        if re.search(r"<!DOCTYPE|<!ENTITY", content, re.I):
-            raise ValueError("XML DTDs and entities are not supported")
-        try:
-            root = ElementTree.fromstring(content)
-        except ElementTree.ParseError as exc:
-            raise ValueError(f"Invalid XML data: {exc}") from exc
-        if root.tag != "inference" or root.attrib:
-            raise ValueError("XML root must be <inference> without attributes")
-        value = {}
-        for child in root:
-            if child.tag in value or child.attrib or len(child):
-                raise ValueError("Use unique, flat XML fields without attributes")
-            value[child.tag] = child.text or ""
-        for key in ("max_new_tokens", "min_peers", "max_peers"):
-            if key in value:
-                try:
-                    value[key] = int(value[key])
-                except ValueError as exc:
-                    raise ValueError(f"{key} must be an integer") from exc
-        if "benchmark" in value:
-            if value["benchmark"].strip().lower() not in {"true", "false"}:
-                raise ValueError("benchmark must be true or false")
-            value["benchmark"] = value["benchmark"].strip().lower() == "true"
+    if isinstance(content, dict):
+        value = dict(content)
+    elif isinstance(content, str):
+        if len(content.encode("utf-8")) > 65536:
+            raise ValueError("Upload a JSON or XML manifest smaller than 64 KiB")
+        if format == "json":
+            try:
+                value = json.loads(content)
+            except Exception as exc:
+                raise ValueError(f"Invalid JSON data: {exc}") from exc
+        elif format == "xml":
+            if re.search(r"<!DOCTYPE|<!ENTITY", content, re.I):
+                raise ValueError("XML DTDs and entities are not supported")
+            try:
+                root = ElementTree.fromstring(content)
+            except ElementTree.ParseError as exc:
+                raise ValueError(f"Invalid XML data: {exc}") from exc
+            if root.tag != "inference" or root.attrib:
+                raise ValueError("XML root must be <inference> without attributes")
+            value = {}
+            for child in root:
+                if child.tag in value or child.attrib or len(child):
+                    raise ValueError("Use unique, flat XML fields without attributes")
+                value[child.tag] = child.text or ""
+        else:
+            raise ValueError("Choose JSON or XML")
     else:
-        raise ValueError("Choose JSON or XML")
-    allowed_keys = {"model_id", "revision", "prompt", "max_new_tokens", "min_peers", "max_peers", "benchmark"}
+        raise ValueError("Upload a JSON or XML manifest")
+
+    for key in ("max_new_tokens", "min_peers", "max_peers", "layers", "hidden_size"):
+        if key in value:
+            try:
+                value[key] = int(value[key])
+            except ValueError as exc:
+                raise ValueError(f"{key} must be an integer") from exc
+    if "benchmark" in value:
+        if isinstance(value["benchmark"], str):
+            value["benchmark"] = value["benchmark"].strip().lower() == "true"
+        elif not isinstance(value["benchmark"], bool):
+            value["benchmark"] = False
+
+    allowed_keys = {"model_id", "revision", "prompt", "max_new_tokens", "min_peers", "max_peers", "benchmark", "layers", "hidden_size", "label"}
     if not isinstance(value, dict) or set(value) - allowed_keys:
         raise ValueError(f"Allowed fields: {', '.join(sorted(allowed_keys))}")
     model_id = value.get("model_id")
+    if not model_id:
+        raise ValueError("model_id field is required")
     if model_id not in CATALOG:
-        raise ValueError("This Petals pilot supports bigscience/bloom-560m and bigscience/bloomz-560m; other architectures need an implemented runtime adapter")
+        raise ValueError(f"Unsupported pilot model: {model_id}. Supported models: {', '.join(CATALOG)}")
     prompt = value.get("prompt")
     if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 4000:
         raise ValueError("Prompt must contain 1–4000 characters")
     revision = value.get("revision", "main")
     if not isinstance(revision, str) or not re.fullmatch(r"main|[a-f0-9]{40}", revision):
         raise ValueError("Revision must be main or an immutable 40-character commit SHA")
-    for name, default, lo, hi in (("max_new_tokens", 32, 1, 128), ("min_peers", 2, 2, 8), ("max_peers", 8, 2, 8)):
+    for name, default, lo, hi in (("max_new_tokens", 32, 1, 128), ("min_peers", 1, 1, 8), ("max_peers", 8, 2, 8)):
         val = value.get(name, default)
         if type(val) is not int or not lo <= val <= hi:
             raise ValueError(f"{name} must be an integer from {lo} to {hi}")
@@ -106,14 +112,16 @@ def placement(spec, peers):
         profile = info.get("profile", {})
         if info.get("busy") or info.get("state") in {"paused", "offline", "busy"} or profile.get("canary_quarantined"):
             continue
-        if profile.get("petals_enabled") is not True or profile.get("docker_ok") is not True or profile.get("petals_protocol_version") != 1:
+        if (profile.get("petals_enabled") is not True or profile.get("docker_ok") is not True
+                or profile.get("petals_protocol_version") != 1
+                or profile.get("petals_network_revision") != PETALS_NETWORK_REVISION):
             continue
         try:
-            ram = min(float(profile["free_ram_gb"]), float(profile["memory_limit_gb"]))
-            disk = float(profile["disk_free_gb"])
+            ram = min(float(profile.get("free_ram_gb") or 1.0), float(profile.get("memory_limit_gb") or 4.0))
+            disk = float(profile.get("disk_free_gb") or 10.0)
         except (KeyError, TypeError, ValueError):
-            continue
-        if ram < 2 or disk < 4:
+            ram, disk = 1.0, 10.0
+        if ram < 0.4 or disk < 2.0:
             continue
         cuda = bool(profile.get("petals_cuda_ready") and float(profile.get("gpu_free_mib") or 0) >= 2048)
         memory = min(ram * 1024, float(profile.get("gpu_free_mib") or 0)) if cuda else ram * 1024
@@ -159,6 +167,7 @@ class Store:
         return sqlite3.connect(self.path, timeout=15)
 
     def save(self, job):
+        self.settle_stages(job)
         job["updated_at"] = time.time()
         with self.db() as db:
             db.execute("INSERT OR REPLACE INTO jobs VALUES (?, ?)", (job["id"], json.dumps(job)))
@@ -166,19 +175,27 @@ class Store:
     def all(self):
         with self.db() as db:
             rows = db.execute("SELECT body FROM jobs ORDER BY rowid DESC LIMIT 100").fetchall()
-        return [json.loads(r[0]) for r in rows]
+        return [self.settle_stages(json.loads(r[0])) for r in rows]
+
+    @staticmethod
+    def settle_stages(job):
+        if job.get("status") in {"failed", "cancelled"}:
+            for state in job.get("stage_status", {}).values():
+                if state.get("status") not in {"failed", "stopped", "completed"}:
+                    state.update(last_status=state.get("status"), status="stopped")
+        return job
 
     def get(self, id):
         with self.db() as db:
             row = db.execute("SELECT body FROM jobs WHERE id=?", (id,)).fetchone()
         if not row:
             raise HTTPException(404, "Unknown distributed job")
-        return json.loads(row[0])
+        return self.settle_stages(json.loads(row[0]))
 
 
 class Upload(BaseModel):
-    content: StrictStr
-    format: StrictStr = "json"
+    content: Union[str, Dict[str, Any], Any]
+    format: str = "json"
 
 
 def install(app, manager):
@@ -209,7 +226,8 @@ def install(app, manager):
                 continue
             profile = info.get("profile", {})
             reason = None
-            if profile.get("petals_protocol_version") != 1:
+            if (profile.get("petals_protocol_version") != 1
+                    or profile.get("petals_network_revision") != PETALS_NETWORK_REVISION):
                 reason = "Install the latest provider app and reconnect"
             elif profile.get("petals_enabled") is not True:
                 reason = "Enable Share model layers in the provider app"
@@ -217,11 +235,11 @@ def install(app, manager):
                 reason = "Start Docker Desktop on this provider"
             elif info.get("busy") or info.get("state") in {"paused", "busy"}:
                 reason = "Provider is busy or paused"
-            elif float(profile.get("free_ram_gb") or 0) < 2 or float(profile.get("disk_free_gb") or 0) < 4:
-                reason = "Needs at least 2 GB free RAM and 4 GB free disk"
+            elif float(profile.get("free_ram_gb") or 0) < 0.4 or float(profile.get("disk_free_gb") or 10.0) < 2.0:
+                reason = "Needs at least 400 MB free RAM and 2 GB free disk"
             providers.append({"node_id": node, **info, "layer_ready": reason is None, "layer_reason": reason,
                               "runtime_installed": bool(profile.get("petals_image_ready"))})
-        return {**state, "providers": providers}
+        return {**state, "providers": providers, "required_network_revision": PETALS_NETWORK_REVISION}
 
     @router.get("/jobs")
     async def jobs():
@@ -257,7 +275,7 @@ def install(app, manager):
                 store.save(job)
             # Never interpret container startup as model readiness. The gateway
             # checks actual DHT layer coverage before opening inference sessions.
-            deadline = time.monotonic() + 900
+            deadline = time.monotonic() + 3600
             while time.monotonic() < deadline:
                 ready = []
                 for stage in plan:
@@ -268,7 +286,7 @@ def install(app, manager):
                         job["stage_status"][stage["node_id"]] = p
                         if p.get("error"):
                             raise RuntimeError(f"Provider {stage['node_id']}: {p['error']}")
-                        if p.get("peer_id"):
+                        if p.get("peer_id") and p.get("status") == "serving" and p.get("network_revision") == PETALS_NETWORK_REVISION:
                             job["stage_status"][stage["node_id"]] = {**p, "status": "serving"}
                             ready.append({**stage, "peer_id": p["peer_id"]})
                 if len(ready) == len(plan):
@@ -277,21 +295,23 @@ def install(app, manager):
                 store.save(job)
                 await asyncio.sleep(2)
             else:
-                raise RuntimeError("Timed out waiting for provider model downloads/startup (15 minutes)")
-            job["status"] = "running"
+                raise RuntimeError("Provider model download/startup exceeded 60 minutes. Check provider disk space, Hugging Face connectivity, and model cache; resume by resubmitting after the download has cached.")
+            job["status"] = "downloading_model"
             store.save(job)
             await asyncio.to_thread(gateway, "/jobs", job)
-            deadline = time.monotonic() + 1800
+            deadline = time.monotonic() + 3600
             while time.monotonic() < deadline:
                 response = await asyncio.to_thread(gateway, "/jobs/" + job["id"])
                 if response["status"] in {"completed", "failed"}:
                     job.update(response)
                     break
                 job["status"] = response["status"]
+                job["progress"] = response.get("progress", 0)
+                job["stage_status"] = {**job.get("stage_status", {}), "coordinator": {"status": response.get("status", "running")}}
                 store.save(job)
                 await asyncio.sleep(2)
             else:
-                raise RuntimeError("Inference exceeded its 30-minute deadline")
+                raise RuntimeError("Model download, verification, or inference exceeded 60 minutes. Check the coordinator Hugging Face cache and gateway log, then retry after the checkpoint has downloaded.")
         except asyncio.CancelledError:
             job.update(status="cancelled", error="Stopped by operator")
         except Exception as exc:

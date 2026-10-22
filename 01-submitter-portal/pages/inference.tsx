@@ -20,7 +20,14 @@ async function api(path: string, options?: RequestInit) {
   return body
 }
 
-const active = ['queued', 'resolving', 'loading', 'running', 'verifying', 'canary', 'benchmarking']
+const active = ['queued', 'resolving', 'loading', 'downloading_model', 'loading_reference', 'connecting_layers', 'running', 'verifying', 'canary', 'benchmarking']
+const stageLabel = (status?: string) => ({
+  assigning: 'Assigning layers', sent: 'Starting provider', loading: 'Downloading model layers',
+  serving: 'Serving layers', downloading_model: 'Downloading tokenizer/model metadata',
+  connecting_layers: 'Connecting distributed layers', loading_reference: 'Downloading verifier checkpoint',
+  running: 'Generating tokens', verifying: 'Verifying layer activations', canary: 'Running hidden canary',
+  benchmarking: 'Benchmarking', completed: 'Completed', failed: 'Failed', cancelled: 'Cancelled'
+} as Record<string, string>)[status || ''] || status || 'Waiting'
 
 export default function Inference() {
   const [content, setContent] = useState('')
@@ -424,6 +431,13 @@ export default function Inference() {
                     </span>
                   </div>
 
+                  {active.includes(current.status) && (
+                    <div style={{ border: '1px solid #25334d', borderRadius: 10, padding: '10px 14px', color: '#a8c1e7', fontSize: 13 }}>
+                      Current step: <b style={{ color: '#e2e8f0' }}>{stageLabel(current.status)}</b>
+                      {current.progress > 0 ? ` · ${current.progress}%` : ''}
+                    </div>
+                  )}
+
                   {/* Partitioned Layer Stages Visualization */}
                   <div>
                     <span className={styles.kicker}>LAYER PARTITIONING SCHEME</span>
@@ -434,7 +448,7 @@ export default function Inference() {
                           <span className={styles.stageLayers}>Layers {stage.start}–{stage.end - 1}</span>
                           <span className={styles.stageNode}>{stage.node_id.slice(-12)}</span>
                           <span style={{ fontSize: '10px', color: current.stage_status?.[stage.node_id]?.status === 'serving' ? '#34d399' : '#fbbf24' }}>
-                            {current.stage_status?.[stage.node_id]?.status || 'Allocated'}
+                            {stageLabel(current.stage_status?.[stage.node_id]?.status)}
                           </span>
                         </div>
                       ))}

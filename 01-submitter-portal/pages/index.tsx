@@ -325,7 +325,10 @@ export default function Home() {
               )}
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '6px' }}>
-                <span style={{ fontSize: '11px', fontWeight: 700, color: '#818cf8' }}>🏠 LOCAL NETWORK (WI-FI LAN)</span>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ fontSize: '11px', fontWeight: 700, color: '#818cf8' }}>🏠 LOCAL NETWORK (WI-FI LAN)</span>
+                  <span style={{ fontSize: '10px', color: '#34d399', fontWeight: 600 }}>Active Online</span>
+                </div>
                 <div className={styles.networkAddressRow}>
                   <code>{lanAddress}</code>
                   <button

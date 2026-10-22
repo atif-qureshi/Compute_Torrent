@@ -19,7 +19,7 @@ import urllib.error
 from urllib.parse import urlsplit, urlunsplit
 from pathlib import Path
 from inference_runtime import run_inference
-from petals_control import PetalsControl
+from petals_control import PetalsControl, provider_identity
 from hardware_details import details as hardware_details, gpu_telemetry
 
 _SYNC_SRC = Path(__file__).resolve().parents[1] / "04-webtorrent-sync" / "src"
@@ -46,7 +46,8 @@ DEFAULT_ORCHESTRATOR_URL = os.getenv("ORCHESTRATOR_URL", "ws://127.0.0.1:8001/ws
 class ComputeTorrentSeeder(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("ComputeTorrent Provider")
+        build = provider_identity()
+        self.title(f"ComputeTorrent Provider · {build['petals_provider_build']} · Network v{build['petals_network_revision']}")
         self.geometry("980x820")
         self.minsize(760, 640)
         self.resizable(True, True)
@@ -104,7 +105,7 @@ class ComputeTorrentSeeder(ctk.CTk):
         if isinstance(cached, dict):
             self.profile.update(cached)
             self.profile["free_ram_gb"] = round(psutil.virtual_memory().available / (1024 ** 3), 1)
-        self.profile.update(petals_enabled=self.petals_enabled, petals_protocol_version=1,
+        self.profile.update(provider_identity(), petals_enabled=self.petals_enabled, petals_protocol_version=1,
                             memory_limit_gb=self.memory_limit_gb, cpu_limit=self.cpu_limit)
         if had_legacy_join_code:
             self.save_settings()
@@ -120,6 +121,13 @@ class ComputeTorrentSeeder(ctk.CTk):
         """Ultra-fast (sub-millisecond) hardware baseline using psutil without spawning external processes."""
         ram_gb = psutil.virtual_memory().total // (1024 ** 3)
         cpu_cores = psutil.cpu_count() or 1
+        try:
+            disk = psutil.disk_usage(os.path.abspath(os.sep))
+            disk_free = round(disk.free / (1024 ** 3), 1)
+            disk_total = round(disk.total / (1024 ** 3), 1)
+        except Exception:
+            disk_free = 20.0
+            disk_total = 100.0
         return {
             "GPU": None,
             "VRAM": 0,
@@ -133,6 +141,8 @@ class ComputeTorrentSeeder(ctk.CTk):
             "cpu_model": f"{cpu_cores} Core Processor",
             "physical_cores": psutil.cpu_count(logical=False) or cpu_cores,
             "free_ram_gb": round(psutil.virtual_memory().available / (1024 ** 3), 1),
+            "disk_free_gb": disk_free,
+            "disk_total_gb": disk_total,
             "petals_image_ready": False,
             "petals_cuda_ready": False,
         }
@@ -149,7 +159,7 @@ class ComputeTorrentSeeder(ctk.CTk):
             self.profile.update(details)
             self.profile.update(caps)
             self.profile.update(telemetry)
-            self.profile.update(petals_enabled=self.petals_enabled, petals_protocol_version=1,
+            self.profile.update(provider_identity(), petals_enabled=self.petals_enabled, petals_protocol_version=1,
                                 memory_limit_gb=self.memory_limit_gb, cpu_limit=self.cpu_limit)
             
             cacheable = {k: v for k, v in self.profile.items() if k not in ("cpu_load_pct", "free_ram_gb")}
@@ -467,7 +477,7 @@ class ComputeTorrentSeeder(ctk.CTk):
             try:
                 self.petals.install_runtime(device, progress=report)
                 self.profile.update(self.petals.capabilities())
-                self.profile.update(petals_enabled=self.petals_enabled, petals_protocol_version=1,
+                self.profile.update(provider_identity(), petals_enabled=self.petals_enabled, petals_protocol_version=1,
                                     cpu_limit=self.cpu_limit, memory_limit_gb=self.memory_limit_gb)
                 self.after(0, lambda: self.runtime_label.configure(
                     text=f"Petals CPU runtime: {'installed' if self.profile.get('petals_image_ready') else 'not installed'} · CUDA runtime: {'ready' if self.profile.get('petals_cuda_ready') else 'not installed or not available'}"))
@@ -500,7 +510,7 @@ class ComputeTorrentSeeder(ctk.CTk):
     def start_connection(self):
         """Start connection to orchestrator"""
         self.petals_enabled = bool(self.layer_switch.get())
-        self.profile.update(petals_enabled=self.petals_enabled, petals_protocol_version=1,
+        self.profile.update(provider_identity(), petals_enabled=self.petals_enabled, petals_protocol_version=1,
                             cpu_limit=self.cpu_limit, memory_limit_gb=self.memory_limit_gb)
         self.orchestrator_url = self.server_entry.get().strip()
         self.enrollment_token = self.enrollment_entry.get().strip()
@@ -541,7 +551,11 @@ class ComputeTorrentSeeder(ctk.CTk):
         enrollment_url = urlunsplit((scheme, parsed.netloc, "/api/seeders/enroll", "", ""))
         payload = json.dumps({"tier": self.profile["tier"], "profile": self.profile}).encode("utf-8")
         request = urllib.request.Request(enrollment_url, data=payload, method="POST", headers={
-            "Content-Type": "application/json", "X-Enrollment-Token": self.enrollment_token})
+            "Content-Type": "application/json",
+            "X-Enrollment-Token": self.enrollment_token,
+            "ngrok-skip-browser-warning": "69420",
+            "User-Agent": "ComputeTorrent-Provider/1.0"
+        })
         try:
             with urllib.request.urlopen(request, timeout=30) as response:
                 enrollment = json.loads(response.read().decode("utf-8"))
@@ -574,7 +588,11 @@ class ComputeTorrentSeeder(ctk.CTk):
             scheme = "https" if parsed.scheme == "wss" else "http"
             coordinator_port = f":{parsed.port}" if parsed.port else (":443" if scheme == "https" else ":80")
             peer_info_url = f"{scheme}://{host_part}{coordinator_port}/api/network/bootstrap"
-            with urllib.request.urlopen(peer_info_url, timeout=8) as response:
+            req = urllib.request.Request(peer_info_url, headers={
+                "ngrok-skip-browser-warning": "69420",
+                "User-Agent": "ComputeTorrent-Provider/1.0"
+            })
+            with urllib.request.urlopen(req, timeout=10) as response:
                 peer_info = json.loads(response.read().decode("utf-8"))
             bootstrap_address = peer_info.get("multiaddr")
             if not isinstance(bootstrap_address, str) or "/p2p/" not in bootstrap_address:
@@ -630,10 +648,19 @@ class ComputeTorrentSeeder(ctk.CTk):
                     self.update_status("Enrolling this computer with the network...")
                     await asyncio.to_thread(self.enroll_provider)
 
+                headers = {
+                    "Authorization": f"Bearer {self.access_token}",
+                    "ngrok-skip-browser-warning": "69420",
+                    "User-Agent": "ComputeTorrent-Provider/1.0",
+                }
                 async with websockets.connect(
                     self.orchestrator_url,
-                    extra_headers={"Authorization": f"Bearer {self.access_token}"},
-                    open_timeout=30, ping_interval=30, ping_timeout=30,
+                    extra_headers=headers,
+                    open_timeout=45,
+                    ping_interval=15,
+                    ping_timeout=35,
+                    close_timeout=15,
+                    max_size=100 * 1024 * 1024,
                 ) as websocket:
                     self.websocket = websocket
                     self.is_connected = True
@@ -667,7 +694,7 @@ class ComputeTorrentSeeder(ctk.CTk):
                         async for message in websocket:
                             await self.handle_message(message)
                     except websockets.exceptions.ConnectionClosed:
-                        self.update_status("❌ Connection lost. Reconnecting...")
+                        self.update_status("🔄 Reconnecting...")
                     finally:
                         heartbeat_task.cancel()
                         self.websocket = None
@@ -678,37 +705,56 @@ class ComputeTorrentSeeder(ctk.CTk):
                     break
                 self.update_status(f"Connection issue: {e}")
             retry_count += 1
-            delay = min(60, 2 ** min(retry_count, 6))
+            delay = min(10, 1 + retry_count)
             if self.shutting_down:
                 break
-            self.update_status(f"Offline; retrying in {delay}s")
+            self.update_status(f"Reconnecting in {delay}s…")
             await asyncio.sleep(delay)
     
     async def send_heartbeats(self, websocket):
-        """Send periodic heartbeats"""
-        while True:
+        """Send periodic heartbeats with failure tolerance"""
+        while not self.shutting_down and self.websocket == websocket:
             try:
                 await self.send_heartbeat_once(websocket)
-                await asyncio.sleep(10)
-            except:
-                break
+            except Exception:
+                # Do not break loop on transient heartbeat errors
+                pass
+            await asyncio.sleep(10)
 
     async def send_heartbeat_once(self, websocket):
         memory = psutil.virtual_memory()
+        try:
+            disk = psutil.disk_usage(os.path.abspath(os.sep))
+            self.profile["disk_free_gb"] = round(disk.free / (1024 ** 3), 1)
+            self.profile["disk_total_gb"] = round(disk.total / (1024 ** 3), 1)
+        except Exception:
+            self.profile.setdefault("disk_free_gb", 20.0)
         self.profile["free_ram_gb"] = round(memory.available / (1024 ** 3), 1)
         self.profile["cpu_load_pct"] = round(psutil.cpu_percent(interval=None), 1)
         self.profile["uptime_seconds"] = int(time.time() - psutil.boot_time())
-        self.profile.update(petals_enabled=self.petals_enabled, petals_protocol_version=1,
+        self.profile.update(provider_identity(), petals_enabled=self.petals_enabled, petals_protocol_version=1,
                             memory_limit_gb=self.memory_limit_gb, cpu_limit=self.cpu_limit)
-        self.profile.update(await asyncio.to_thread(gpu_telemetry))
+        
+        # Only query GPU telemetry periodically (every 45s) to avoid PowerShell WMI stalls
+        now = time.time()
+        if now - getattr(self, "_last_gpu_telemetry_time", 0) > 45:
+            self._last_gpu_telemetry_time = now
+            try:
+                self.profile.update(await asyncio.to_thread(gpu_telemetry))
+            except Exception:
+                pass
+
         self.profile["petals"] = await asyncio.to_thread(self.petals.status, self.is_connected and not self.paused)
+        layer_active = self.profile["petals"].get("status") not in {"idle", "failed", "stopped", "cancelled"}
+        if not layer_active and str(self.current_task or "").startswith("Petals:"):
+            self.current_task = None
         if hasattr(self, 'layer_label'):
             text = self.profile['petals']
             self.after(0, lambda: self.layer_label.configure(text=f"Layers: {text.get('start', '—')}–{text.get('end', '—')} · {text.get('status', 'idle')}"))
         await websocket.send(json.dumps({
             "type": "heartbeat",
             "node_id": self.node_id,
-            "state": "paused" if self.paused else ("busy" if self.current_task or self.petals.job_id else "idle"),
+            "state": "paused" if self.paused else ("busy" if self.current_task or layer_active else "idle"),
             "profile": self.profile,
         }))
     
@@ -727,7 +773,10 @@ class ComputeTorrentSeeder(ctk.CTk):
             
             elif msg_type == "petals_start":
                 if self.paused or not self.petals_enabled or self.current_task:
-                    self.profile['petals'] = {'job_id': data.get('job_id'), 'error': 'Layer sharing is disabled or provider is busy'}
+                    error = 'Layer sharing is disabled or provider is busy'
+                    if not self.current_task:
+                        self.petals.fail_job(data.get('job_id'), error)
+                    self.profile['petals'] = {'job_id': data.get('job_id'), 'status': 'failed', 'error': error}
                     await websocket_profile(self)
                     return
                 try:
@@ -741,14 +790,19 @@ class ComputeTorrentSeeder(ctk.CTk):
                     if hasattr(self, 'layer_label'):
                         self.after(0, lambda: self.layer_label.configure(text=f"🟢 Active Task: Layers {start_layer}–{end_layer} assigned", text_color="#00d4ff"))
                     await asyncio.to_thread(self.petals.start, data, self.orchestrator_url, self.cpu_limit, self.memory_limit_gb)
+                    self.profile.update(await asyncio.to_thread(self.petals.capabilities))
+                    self.profile['petals'] = await asyncio.to_thread(self.petals.status)
+                    await websocket_profile(self)
                 except Exception as error:
                     self.current_task = None
-                    self.profile['petals'] = {'job_id': data.get('job_id'), 'error': str(error)[:500]}
+                    self.petals.fail_job(data.get('job_id'), str(error))
+                    self.profile['petals'] = self.petals.status(renew=False)
                     self.update_task_info(f"❌ Error starting layer task: {str(error)[:100]}")
                     self.update_status("Error loading layers")
                     await websocket_profile(self)
             elif msg_type == "petals_stop":
                 await asyncio.to_thread(self.petals.stop, data.get('job_id'))
+                self.profile['petals'] = self.petals.status(renew=False)
                 self.current_task = None
                 self.update_task_info("✅ Layer serving completed · Ready for next task")
                 self.update_status("Online & ready for tasks")
@@ -1054,7 +1108,9 @@ class ComputeTorrentSeeder(ctk.CTk):
 
 async def websocket_profile(app):
     if app.websocket:
-        await app.websocket.send(json.dumps({'type': 'heartbeat', 'state': 'paused' if app.paused else 'idle', 'profile': app.profile}))
+        layer_active = app.profile.get('petals', {}).get('status', 'idle') not in {'idle', 'failed', 'stopped', 'cancelled'}
+        state = 'paused' if app.paused else ('busy' if app.current_task or layer_active else 'idle')
+        await app.websocket.send(json.dumps({'type': 'heartbeat', 'state': state, 'profile': app.profile}))
 
 
 def main():

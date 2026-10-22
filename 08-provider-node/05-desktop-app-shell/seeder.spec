@@ -24,7 +24,13 @@ bundle_datas.extend([
 petals_runtime = os.path.abspath(os.path.join(SPECPATH, '..', '06-petals-runtime'))
 if not os.path.isfile(os.path.join(petals_runtime, 'Dockerfile')):
     raise RuntimeError('Petals runtime recipe is missing')
-bundle_datas.append((petals_runtime, 'petals-runtime'))
+from pathlib import Path
+runtime_root = Path(petals_runtime)
+runtime_sources = sorted(runtime_root.glob('*.py'))
+runtime_sources += [runtime_root / 'Dockerfile', runtime_root / 'Dockerfile.cuda']
+runtime_sources += sorted(runtime_root.glob('requirements*.txt'))
+runtime_sources += sorted(runtime_root.glob('*.whl'))
+bundle_datas.extend((str(path), 'petals-runtime') for path in runtime_sources if path.is_file())
 bundle_datas.extend(ctk_datas)
 
 a = Analysis(

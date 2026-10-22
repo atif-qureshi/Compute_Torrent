@@ -16,6 +16,7 @@ LOCK = threading.Lock()
 process = None
 active_id = None
 bootstrap = []
+dht = None
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -42,7 +43,11 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(401, {"detail": "Authentication required"})
         try:
             if self.command == "GET" and self.path == "/health":
-                return self.reply(200, {"status": "ready", "bootstrap": bootstrap})
+                alive = dht is not None and dht.is_alive()
+                return self.reply(200 if alive else 503, {
+                    "status": "ready" if alive else "unavailable", "bootstrap": bootstrap if alive else [],
+                    "network_revision": 2,
+                })
             if self.command == "GET" and self.path.startswith("/jobs/"):
                 id = self.path.split("/")[-1]
                 if not re.fullmatch(r"[a-f0-9]{32}", id):
@@ -82,6 +87,7 @@ class Handler(BaseHTTPRequestHandler):
                                      for peer in bootstrap]
                 request = ROOT / (active_id + ".request.json")
                 request.write_text(json.dumps(data))
+                (ROOT / (active_id + ".progress.json")).write_text(json.dumps({"status": "downloading_model", "progress": 0}))
                 with (ROOT / (active_id + ".log")).open("w") as log:
                     process = subprocess.Popen([sys.executable, "/app/generate_job.py", str(request)], stdout=log, stderr=log)
             return self.reply(202, {"status": "running"})
@@ -90,13 +96,16 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    global bootstrap
+    global bootstrap, dht
     import hivemind
     host = os.environ["PETALS_ADVERTISE_HOST"]
     if not re.fullmatch(r"[0-9.]+", host):
         raise ValueError("PETALS_ADVERTISE_HOST must be the coordinator's LAN IPv4 address")
+    identity = Path(os.getenv("PETALS_IDENTITY_PATH", "/cache/petals/dht-identity.key"))
+    identity.parent.mkdir(parents=True, exist_ok=True)
     dht = hivemind.DHT(initial_peers=[], host_maddrs=["/ip4/0.0.0.0/tcp/31331"],
-                       announce_maddrs=[f"/ip4/{host}/tcp/31331"], start=True)
+                       announce_maddrs=[f"/ip4/{host}/tcp/31331"], identity_path=str(identity),
+                       use_auto_relay=False, use_relay=False, auto_nat=False, nat_port_map=False, start=True)
     bootstrap = [str(a) for a in dht.get_visible_maddrs()]
     try:
         ThreadingHTTPServer(("0.0.0.0", 8002), Handler).serve_forever()

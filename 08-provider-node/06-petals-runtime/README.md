@@ -42,6 +42,19 @@ Only capacity metrics are reported; the app does not scan personal files.
 Allow trusted LAN TCP ports 8001, 31330 and 31331. The coordinator's advertised
 address must be its private LAN IPv4 address, not `127.0.0.1`.
 
+Provider builds report network revision 2. Older apps remain visible but cannot
+receive layer assignments until updated. Install the current ZIP on every PC,
+close older app instances, then reconnect. The app checks a digest of its bundled
+runtime and rebuilds an outdated Docker image automatically using Docker's cache.
+Local coordinator providers use Docker Desktop's host alias; remote PCs keep
+the coordinator LAN address and advertise their own LAN address.
+
+Before downloading blocks, the worker performs a real libp2p handshake from
+inside its Docker network. The gateway keeps its peer identity under
+`runtime/petals-cache/petals/dht-identity.key` across restarts. A worker is marked
+serving only when its Petals module container is ready and healthy. Failed jobs
+stop every assigned peer; the portal preserves the failing peer's error.
+
 ## Verification boundary
 
 The generation client commits real stage-boundary activations, chooses a fresh
