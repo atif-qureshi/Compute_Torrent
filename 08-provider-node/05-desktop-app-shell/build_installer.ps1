@@ -30,7 +30,7 @@ if ($SkipDependencies) {
 import importlib.metadata as metadata
 from pathlib import Path
 from packaging.requirements import Requirement
-for line in Path('requirements.txt').read_text(encoding='utf-8').splitlines():
+for line in Path('requirements.txt').read_text(encoding='utf-8-sig').splitlines():
     if not line.strip() or line.lstrip().startswith('#'):
         continue
     requirement = Requirement(line)
