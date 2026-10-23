@@ -40,6 +40,8 @@ export default function Home() {
   const [publicAddress, setPublicAddress] = useState<string | null>(null)
   const [copiedLan, setCopiedLan] = useState(false)
   const [copiedPublic, setCopiedPublic] = useState(false)
+  const [enrollmentToken, setEnrollmentToken] = useState('local-volunteer-join')
+  const [copiedToken, setCopiedToken] = useState(false)
   const [isRefreshing, setIsRefreshing] = useState(false)
 
   useEffect(() => {
@@ -52,6 +54,7 @@ export default function Home() {
         else setProviderAddress(fallback)
         if (data.lan_address) setLanAddress(data.lan_address)
         if (data.public_address) setPublicAddress(data.public_address)
+        if (data.enrollment_token) setEnrollmentToken(data.enrollment_token)
       })
       .catch(() => setProviderAddress(fallback))
   }, [])
@@ -345,6 +348,30 @@ export default function Home() {
                 </div>
                 <small style={{ color: '#64748b', fontSize: '11px' }}>
                   Use this URL for PCs connected to the same local Wi-Fi router.
+                </small>
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '12px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ fontSize: '11px', fontWeight: 700, color: '#f59e0b' }}>🔑 ONE-TIME PROVIDER JOIN CODE</span>
+                  <span style={{ fontSize: '10px', color: '#34d399', fontWeight: 600 }}>Required for Clients</span>
+                </div>
+                <div className={styles.networkAddressRow} style={{ borderColor: 'rgba(245, 158, 11, 0.4)' }}>
+                  <code style={{ color: '#fde68a' }}>{enrollmentToken}</code>
+                  <button
+                    type="button"
+                    className={styles.copyAddressBtn}
+                    onClick={() => {
+                      navigator.clipboard.writeText(enrollmentToken)
+                      setCopiedToken(true)
+                      setTimeout(() => setCopiedToken(false), 2200)
+                    }}
+                  >
+                    {copiedToken ? '✅ Copied' : '📋 Copy'}
+                  </button>
+                </div>
+                <small style={{ color: '#64748b', fontSize: '11px' }}>
+                  Send this join code to volunteer peers so their app can enroll with your network.
                 </small>
               </div>
             </div>

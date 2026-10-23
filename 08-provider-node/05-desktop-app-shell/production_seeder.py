@@ -550,9 +550,10 @@ class ComputeTorrentSeeder(ctk.CTk):
         scheme = "https" if parsed.scheme == "wss" else "http"
         enrollment_url = urlunsplit((scheme, parsed.netloc, "/api/seeders/enroll", "", ""))
         payload = json.dumps({"tier": self.profile["tier"], "profile": self.profile}).encode("utf-8")
+        token_to_send = self.enrollment_token.strip() if self.enrollment_token else "local-volunteer-join"
         request = urllib.request.Request(enrollment_url, data=payload, method="POST", headers={
             "Content-Type": "application/json",
-            "X-Enrollment-Token": self.enrollment_token,
+            "X-Enrollment-Token": token_to_send,
             "ngrok-skip-browser-warning": "69420",
             "User-Agent": "ComputeTorrent-Provider/1.0"
         })
@@ -653,14 +654,22 @@ class ComputeTorrentSeeder(ctk.CTk):
                     "ngrok-skip-browser-warning": "69420",
                     "User-Agent": "ComputeTorrent-Provider/1.0",
                 }
+                connect_kwargs = {
+                    "open_timeout": 45,
+                    "ping_interval": 15,
+                    "ping_timeout": 35,
+                    "close_timeout": 15,
+                    "max_size": 100 * 1024 * 1024,
+                }
+                import inspect
+                if "additional_headers" in inspect.signature(websockets.connect).parameters:
+                    connect_kwargs["additional_headers"] = headers
+                else:
+                    connect_kwargs["extra_headers"] = headers
+
                 async with websockets.connect(
                     self.orchestrator_url,
-                    extra_headers=headers,
-                    open_timeout=45,
-                    ping_interval=15,
-                    ping_timeout=35,
-                    close_timeout=15,
-                    max_size=100 * 1024 * 1024,
+                    **connect_kwargs
                 ) as websocket:
                     self.websocket = websocket
                     self.is_connected = True
@@ -703,7 +712,19 @@ class ComputeTorrentSeeder(ctk.CTk):
             except Exception as e:
                 if self.shutting_down:
                     break
-                self.update_status(f"Connection issue: {e}")
+                err_msg = str(e)
+                if "401" in err_msg or "enrollment failed" in err_msg.lower():
+                    self.update_status("❌ Invalid join code. Verify the enrollment code.")
+                    await asyncio.sleep(4)
+                elif "1225" in err_msg or "10061" in err_msg or "ConnectionRefused" in err_msg:
+                    self.update_status(f"❌ Cannot reach {self.orchestrator_url}")
+                    await asyncio.sleep(3)
+                elif "TypeError" in err_msg:
+                    self.update_status(f"❌ Client error: {err_msg[:60]}")
+                    await asyncio.sleep(3)
+                else:
+                    self.update_status(f"⚠️ {err_msg[:60]}")
+                    await asyncio.sleep(2)
             retry_count += 1
             delay = min(10, 1 + retry_count)
             if self.shutting_down:
