@@ -90,6 +90,19 @@ removes the application and shortcut while retaining the model cache.
     $Release | Add-Member -NotePropertyName built_at_utc -NotePropertyValue ([DateTime]::UtcNow.ToString('o'))
     $Release | Add-Member -NotePropertyName executable_sha256 -NotePropertyValue ((Get-FileHash -LiteralPath (Join-Path $DistPath 'ComputeTorrent_Seeder.exe') -Algorithm SHA256).Hash.ToLowerInvariant())
     $Release | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 (Join-Path $DistPath 'provider-release.json')
+    $UpdateDir = Join-Path $PSScriptRoot '..\..\runtime\provider-updates'
+    New-Item -ItemType Directory -Force -Path $UpdateDir | Out-Null
+    Copy-Item -LiteralPath (Join-Path $DistPath 'ComputeTorrent_Seeder.exe') -Destination (Join-Path $UpdateDir 'ComputeTorrent_Seeder.exe') -Force
+    $UpdateManifest = [ordered]@{
+        version = $Release.petals_provider_build
+        filename = 'ComputeTorrent_Seeder.exe'
+        sha256 = $Release.executable_sha256
+        size = (Get-Item -LiteralPath (Join-Path $UpdateDir 'ComputeTorrent_Seeder.exe')).Length
+        published_at_utc = $Release.built_at_utc
+    }
+    $ManifestTemp = Join-Path $UpdateDir 'manifest.next.json'
+    $UpdateManifest | ConvertTo-Json | Set-Content -Encoding UTF8 $ManifestTemp
+    Move-Item -LiteralPath $ManifestTemp -Destination (Join-Path $UpdateDir 'manifest.json') -Force
     $Archive = Join-Path $DistPath "ComputeTorrent-Seeder-Installer.zip"
     if (Test-Path -LiteralPath $Archive) { Remove-Item -LiteralPath $Archive -Force }
     Compress-Archive -Path (Join-Path $DistPath "ComputeTorrent_Seeder.exe"),
@@ -98,6 +111,11 @@ removes the application and shortcut while retaining the model cache.
         (Join-Path $DistPath "README.txt"),
         (Join-Path $DistPath "provider-release.json") -DestinationPath $Archive -CompressionLevel Optimal
     Copy-Item -LiteralPath $Archive -Destination (Join-Path $DistPath 'ComputeTorrent_Seeder.zip') -Force
+    $InnoCompiler = Join-Path $env:LOCALAPPDATA 'Programs\Inno Setup 7\ISCC.exe'
+    if (Test-Path -LiteralPath $InnoCompiler) {
+        & $InnoCompiler ("/DAppVersion=" + $Release.petals_provider_build) (Join-Path $PSScriptRoot 'provider-setup.iss')
+        if ($LASTEXITCODE -ne 0) { throw 'Inno Setup failed to package the Windows installer.' }
+    }
     $LegacyShell = Join-Path $PSScriptRoot '..\..\desktop\05-desktop-app-shell'
     if (Test-Path -LiteralPath $LegacyShell) {
         $LegacyDist = Join-Path $LegacyShell 'dist'
@@ -106,6 +124,10 @@ removes the application and shortcut while retaining the model cache.
                 'ComputeTorrent_Seeder.zip', 'Install-ComputeTorrent.ps1', 'Uninstall-ComputeTorrent.ps1',
                 'README.txt', 'provider-release.json')) {
             Copy-Item -LiteralPath (Join-Path $DistPath $ArtifactName) -Destination (Join-Path $LegacyDist $ArtifactName) -Force
+        }
+        $SetupExe = Join-Path $DistPath 'ComputeTorrent-Provider-Setup.exe'
+        if (Test-Path -LiteralPath $SetupExe) {
+            Copy-Item -LiteralPath $SetupExe -Destination (Join-Path $LegacyDist 'ComputeTorrent-Provider-Setup.exe') -Force
         }
     }
     Write-Output "✅ Build successful!"

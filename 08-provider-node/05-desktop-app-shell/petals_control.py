@@ -15,7 +15,7 @@ from urllib.parse import urlsplit
 CPU_IMAGE = "computetorrent-petals:local"
 CUDA_IMAGE = "computetorrent-petals:cuda-local"
 NETWORK_REVISION = 2
-PROVIDER_BUILD = "2026.10.22-network2"
+PROVIDER_BUILD = "2026.11.01-update2"
 DIGEST_LABEL = "computetorrent.runtime.digest"
 RUNTIME_DIR = (Path(__file__).resolve().parents[1] / "06-petals-runtime" if not getattr(sys, "frozen", False)
                else Path(sys._MEIPASS) / "petals-runtime")

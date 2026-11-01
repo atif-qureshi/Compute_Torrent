@@ -39,8 +39,10 @@ services:
       COMPUTETORRENT_SWARM_DATA: /data
       COMPUTETORRENT_PETALS_URL: http://petals:8002
       COMPUTETORRENT_JOB_DATA: /data/distributed
+      COMPUTETORRENT_PROVIDER_UPDATE_DIR: /data/provider-updates
     volumes:
       - ./runtime/swarm:/data
+      - ./runtime/provider-updates:/data/provider-updates:ro
       - ./orchestrator/app/models.json:/app/app/models.json
     ports:
       - "${COMPUTETORRENT_BIND_IP:-127.0.0.1}:8001:8001"

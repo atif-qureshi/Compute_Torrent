@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, JSON
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
@@ -262,6 +262,25 @@ app.add_middleware(
 
 API_TOKEN = os.getenv("COMPUTETORRENT_API_TOKEN", "").strip()
 SEEDER_ENROLLMENT_TOKEN = os.getenv("COMPUTETORRENT_SEEDER_ENROLLMENT_TOKEN", "").strip()
+PROVIDER_UPDATE_DIR = Path(os.getenv("COMPUTETORRENT_PROVIDER_UPDATE_DIR", "/data/provider-updates"))
+
+@app.get("/api/provider-update/manifest")
+def provider_update_manifest():
+    manifest_file = PROVIDER_UPDATE_DIR / "manifest.json"
+    if not manifest_file.is_file():
+        raise HTTPException(404, "No provider update published")
+    manifest = json.loads(manifest_file.read_text(encoding="utf-8-sig"))
+    if manifest.get("filename") != "ComputeTorrent_Seeder.exe" or not isinstance(manifest.get("sha256"), str):
+        raise HTTPException(503, "Invalid provider update manifest")
+    return manifest
+
+@app.get("/api/provider-update/download")
+def provider_update_download():
+    manifest = provider_update_manifest()
+    package = PROVIDER_UPDATE_DIR / manifest["filename"]
+    if not package.is_file() or package.stat().st_size != manifest.get("size"):
+        raise HTTPException(503, "Provider update package is unavailable")
+    return FileResponse(package, media_type="application/octet-stream", filename=package.name)
 
 def valid_api_token(value: Optional[str]) -> bool:
     if not API_TOKEN or not value or not value.startswith("Bearer "):
@@ -271,7 +290,8 @@ def valid_api_token(value: Optional[str]) -> bool:
 @app.middleware("http")
 async def protect_api(request: Request, call_next):
     if request.url.path.startswith("/api/") and request.url.path not in {
-        "/api/health", "/api/seeders/enroll", "/api/network/bootstrap"
+        "/api/health", "/api/seeders/enroll", "/api/network/bootstrap",
+        "/api/provider-update/manifest", "/api/provider-update/download"
     }:
         if not valid_api_token(request.headers.get("authorization")):
             return JSONResponse({"detail": "A valid bearer token is required"}, status_code=401)

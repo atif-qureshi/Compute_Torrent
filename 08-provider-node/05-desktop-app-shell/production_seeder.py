@@ -20,6 +20,7 @@ from urllib.parse import urlsplit, urlunsplit
 from pathlib import Path
 from inference_runtime import run_inference
 from petals_control import PetalsControl, provider_identity
+from provider_update import check_update, stage_update, restart_with_update
 from hardware_details import details as hardware_details, gpu_telemetry
 
 _SYNC_SRC = Path(__file__).resolve().parents[1] / "04-webtorrent-sync" / "src"
@@ -113,6 +114,8 @@ class ComputeTorrentSeeder(ctk.CTk):
         
         # Show onboarding UI immediately without blocking
         self.show_onboarding()
+        self.available_update = None
+        self.after(1500, self.check_for_update)
 
         # Run deep hardware & Docker scans in background daemon thread
         threading.Thread(target=self._async_background_hardware_scan, daemon=True).start()
@@ -307,6 +310,69 @@ class ComputeTorrentSeeder(ctk.CTk):
     def clear_screen(self):
         for widget in self.winfo_children():
             widget.destroy()
+        toolbar = ctk.CTkFrame(self, fg_color="#5b21b6", height=48)
+        toolbar.pack(fill="x")
+        ctk.CTkLabel(toolbar, text="● VIOLET UPDATE TEST", text_color="#ffffff",
+                     font=("Arial", 13, "bold")).pack(side="left", padx=(16, 8))
+        self.update_notice = ctk.CTkLabel(toolbar, text="Provider updates", text_color="#ddd6fe")
+        self.update_notice.pack(side="left", padx=16)
+        self.update_button = ctk.CTkButton(toolbar, text="Check for updates", width=160,
+                                            fg_color="#7c3aed", hover_color="#6d28d9",
+                                            command=self.update_clicked)
+        self.update_button.pack(side="right", padx=12, pady=6)
+        if getattr(self, "available_update", None):
+            self.update_notice.configure(text=f"Update available: {self.available_update[0]['version']}",
+                                         text_color="#fbbf24")
+            self.update_button.configure(text="Download & update")
+
+    def check_for_update(self):
+        if self.shutting_down:
+            return
+        def work():
+            try:
+                update, base = check_update(self.orchestrator_url, provider_identity()["petals_provider_build"])
+                def show():
+                    self.available_update = (update, base) if update else None
+                    if update:
+                        self.update_notice.configure(text=f"Update available: {update['version']}", text_color="#fbbf24")
+                        self.update_button.configure(text="Download & update")
+                    else:
+                        self.update_notice.configure(text="Provider is up to date", text_color="#86efac")
+                        self.update_button.configure(text="Check for updates")
+                self.after(0, show)
+            except Exception:
+                # Offline coordinators are normal during onboarding; retry later.
+                pass
+        threading.Thread(target=work, daemon=True).start()
+        self.after(30 * 60 * 1000, self.check_for_update)
+
+    def update_clicked(self):
+        if not self.available_update:
+            self.update_notice.configure(text="Checking coordinator…")
+            self.check_for_update()
+            return
+        if self.current_task:
+            self.update_notice.configure(text="Finish the current task before updating", text_color="#fbbf24")
+            return
+        manifest, base = self.available_update
+        self.update_button.configure(state="disabled")
+        self.update_notice.configure(text="Downloading verified update…")
+        def work():
+            try:
+                staged = stage_update(base, manifest, self.app_data)
+                def install():
+                    try:
+                        restart_with_update(staged, self.app_data)
+                        self.close_application()
+                    except Exception as error:
+                        self.update_notice.configure(text=f"Update failed: {error}", text_color="#fca5a5")
+                        self.update_button.configure(state="normal")
+                self.after(0, install)
+            except Exception as error:
+                self.after(0, lambda message=str(error): (self.update_notice.configure(
+                    text=f"Update failed: {message}", text_color="#fca5a5"),
+                    self.update_button.configure(state="normal")))
+        threading.Thread(target=work, daemon=True).start()
     
     def show_onboarding(self):
         self.clear_screen()

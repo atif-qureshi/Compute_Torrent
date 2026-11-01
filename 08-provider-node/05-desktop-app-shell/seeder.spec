@@ -42,6 +42,7 @@ a = Analysis(
         'inference_runtime',
         'petals_control',
         'hardware_details',
+        'provider_update',
         'webtorrent_client',
         'customtkinter',
         'psutil',
