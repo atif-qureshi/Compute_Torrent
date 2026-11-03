@@ -78,15 +78,7 @@ class ComputeTorrentSeeder(ctk.CTk):
         self.node_id = self.settings.get("node_id")
         self.access_token = self.settings.get("access_token")
         self.orchestrator_url = self.settings.get("orchestrator_url")
-        if not self.orchestrator_url or self.orchestrator_url == "ws://127.0.0.1:8001/ws/seeder":
-            tunnel_file = Path(__file__).resolve().parents[2] / "runtime" / "public_tunnel.json"
-            if tunnel_file.is_file():
-                try:
-                    data = json.loads(tunnel_file.read_text(encoding="utf-8"))
-                    if data.get("ws_url"):
-                        self.orchestrator_url = data["ws_url"]
-                except Exception:
-                    pass
+
         if not self.orchestrator_url:
             self.orchestrator_url = DEFAULT_ORCHESTRATOR_URL
         # The network-wide enrollment code is a one-time secret; keep it in
@@ -307,71 +299,153 @@ class ComputeTorrentSeeder(ctk.CTk):
             "tier": tier
         }
     
+    def get_coordinator_url(self):
+        if hasattr(self, "server_entry") and self.server_entry.winfo_exists():
+            val = self.server_entry.get().strip()
+            if val:
+                return val
+        return getattr(self, "orchestrator_url", "ws://127.0.0.1:8001/ws/seeder")
+
     def clear_screen(self):
         for widget in self.winfo_children():
             widget.destroy()
-        toolbar = ctk.CTkFrame(self, fg_color="#5b21b6", height=48)
+        toolbar = ctk.CTkFrame(self, fg_color="#2e1065", height=48)
         toolbar.pack(fill="x")
-        ctk.CTkLabel(toolbar, text="● VIOLET UPDATE TEST", text_color="#ffffff",
-                     font=("Arial", 13, "bold")).pack(side="left", padx=(16, 8))
-        self.update_notice = ctk.CTkLabel(toolbar, text="Provider updates", text_color="#ddd6fe")
+        
+        brand_frame = ctk.CTkFrame(toolbar, fg_color="transparent")
+        brand_frame.pack(side="left", padx=(16, 8))
+        ctk.CTkLabel(brand_frame, text="⚡ ComputeTorrent", text_color="#c084fc",
+                     font=("Arial", 13, "bold")).pack(side="left")
+        curr_ver = provider_identity().get("petals_provider_build", "dev")
+        ctk.CTkLabel(brand_frame, text=f"v{curr_ver}", text_color="#a855f7",
+                     font=("Arial", 11)).pack(side="left", padx=(6, 0))
+
+        self.update_notice = ctk.CTkLabel(toolbar, text="Checking for updates…", text_color="#cbd5e1",
+                                          font=("Arial", 12))
         self.update_notice.pack(side="left", padx=16)
-        self.update_button = ctk.CTkButton(toolbar, text="Check for updates", width=160,
+
+        self.update_button = ctk.CTkButton(toolbar, text="Check for updates", width=170,
                                             fg_color="#7c3aed", hover_color="#6d28d9",
+                                            font=("Arial", 12, "bold"),
                                             command=self.update_clicked)
         self.update_button.pack(side="right", padx=12, pady=6)
+        
         if getattr(self, "available_update", None):
-            self.update_notice.configure(text=f"Update available: {self.available_update[0]['version']}",
-                                         text_color="#fbbf24")
-            self.update_button.configure(text="Download & update")
+            manifest, base, is_newer = self.available_update
+            if is_newer:
+                size_mb = round(manifest.get("size", 0) / (1024 * 1024), 1)
+                self.update_notice.configure(
+                    text=f"🔥 Update Available: v{manifest.get('version')} ({size_mb} MB)",
+                    text_color="#fbbf24"
+                )
+                self.update_button.configure(text="⬇️ Download & Update", fg_color="#ea580c", hover_color="#c2410c")
+            else:
+                self.update_notice.configure(
+                    text=f"✅ Provider is up to date (v{manifest.get('version', curr_ver)})",
+                    text_color="#86efac"
+                )
+                self.update_button.configure(text="🔄 Reinstall / Update", fg_color="#7c3aed", hover_color="#6d28d9")
 
-    def check_for_update(self):
+    def check_for_update(self, manual=False):
         if self.shutting_down:
             return
+        target_url = self.get_coordinator_url()
+        if manual:
+            self.update_notice.configure(text="🔍 Contacting coordinator for updates…", text_color="#38bdf8")
+            self.update_button.configure(state="disabled")
         def work():
             try:
-                update, base = check_update(self.orchestrator_url, provider_identity()["petals_provider_build"])
+                curr_ver = provider_identity().get("petals_provider_build", "dev")
+                manifest, base, is_newer = check_update(target_url, curr_ver)
                 def show():
-                    self.available_update = (update, base) if update else None
-                    if update:
-                        self.update_notice.configure(text=f"Update available: {update['version']}", text_color="#fbbf24")
-                        self.update_button.configure(text="Download & update")
-                    else:
-                        self.update_notice.configure(text="Provider is up to date", text_color="#86efac")
-                        self.update_button.configure(text="Check for updates")
+                    self.available_update = (manifest, base, is_newer)
+                    if hasattr(self, "update_button") and self.update_button.winfo_exists():
+                        self.update_button.configure(state="normal")
+                    if hasattr(self, "update_notice") and self.update_notice.winfo_exists():
+                        if is_newer:
+                            size_mb = round(manifest.get("size", 0) / (1024 * 1024), 1)
+                            self.update_notice.configure(
+                                text=f"🔥 Update Available: v{manifest.get('version')} ({size_mb} MB)",
+                                text_color="#fbbf24"
+                            )
+                            self.update_button.configure(text="⬇️ Download & Update", fg_color="#ea580c", hover_color="#c2410c")
+                        else:
+                            self.update_notice.configure(
+                                text=f"✅ Provider is up to date (v{manifest.get('version', curr_ver)})",
+                                text_color="#86efac"
+                            )
+                            self.update_button.configure(text="🔄 Reinstall / Update", fg_color="#7c3aed", hover_color="#6d28d9")
                 self.after(0, show)
-            except Exception:
-                # Offline coordinators are normal during onboarding; retry later.
-                pass
+            except Exception as err:
+                def show_err():
+                    if hasattr(self, "update_button") and self.update_button.winfo_exists():
+                        self.update_button.configure(state="normal")
+                    if hasattr(self, "update_notice") and self.update_notice.winfo_exists():
+                        if manual:
+                            self.update_notice.configure(text=f"⚠️ Update check failed: {err}", text_color="#f87171")
+                        else:
+                            self.update_notice.configure(text="Provider updates idle", text_color="#94a3b8")
+                self.after(0, show_err)
         threading.Thread(target=work, daemon=True).start()
         self.after(30 * 60 * 1000, self.check_for_update)
 
     def update_clicked(self):
-        if not self.available_update:
-            self.update_notice.configure(text="Checking coordinator…")
-            self.check_for_update()
-            return
+        target_url = self.get_coordinator_url()
         if self.current_task:
-            self.update_notice.configure(text="Finish the current task before updating", text_color="#fbbf24")
+            self.update_notice.configure(text="⚠️ Finish current task before updating", text_color="#fbbf24")
             return
-        manifest, base = self.available_update
-        self.update_button.configure(state="disabled")
-        self.update_notice.configure(text="Downloading verified update…")
+            
+        self.update_button.configure(state="disabled", text="⏳ Updating...")
+        self.update_notice.configure(text="🚀 Contacting coordinator to download update…", text_color="#38bdf8")
+
         def work():
             try:
-                staged = stage_update(base, manifest, self.app_data)
-                def install():
+                curr_ver = provider_identity().get("petals_provider_build", "dev")
+                manifest, base, is_newer = check_update(target_url, curr_ver)
+                self.available_update = (manifest, base, is_newer)
+                
+                last_pct = [-1]
+                def on_progress(downloaded, total):
+                    pct = int((downloaded / total) * 100) if total else 0
+                    if pct != last_pct[0] or downloaded == total:
+                        last_pct[0] = pct
+                        mb_done = downloaded / (1024 * 1024)
+                        mb_tot = total / (1024 * 1024)
+                        msg = f"⬇️ Downloading update: {pct}% ({mb_done:.1f} MB / {mb_tot:.1f} MB)..."
+                        def _set(m=msg):
+                            try:
+                                if hasattr(self, "update_notice") and self.update_notice.winfo_exists():
+                                    self.update_notice.configure(text=m, text_color="#38bdf8")
+                            except Exception:
+                                pass
+                        self.after(0, _set)
+
+                staged = stage_update(base, manifest, self.app_data, progress_callback=on_progress)
+                
+                def on_done():
                     try:
+                        if hasattr(self, "update_notice") and self.update_notice.winfo_exists():
+                            self.update_notice.configure(text="🎉 Update verified! Launching new version...", text_color="#a855f7")
                         restart_with_update(staged, self.app_data)
-                        self.close_application()
+                        self.after(1200, self.close_application)
                     except Exception as error:
-                        self.update_notice.configure(text=f"Update failed: {error}", text_color="#fca5a5")
-                        self.update_button.configure(state="normal")
-                self.after(0, install)
+                        if hasattr(self, "update_notice") and self.update_notice.winfo_exists():
+                            self.update_notice.configure(text=f"❌ Install failed: {error}", text_color="#f87171")
+                        if hasattr(self, "update_button") and self.update_button.winfo_exists():
+                            self.update_button.configure(state="normal", text="🔄 Retry Update")
+                self.after(0, on_done)
+
             except Exception as error:
-                self.after(0, lambda message=str(error): (self.update_notice.configure(
-                    text=f"Update failed: {message}", text_color="#fca5a5"),
-                    self.update_button.configure(state="normal")))
+                def on_err(msg=str(error)):
+                    try:
+                        if hasattr(self, "update_notice") and self.update_notice.winfo_exists():
+                            self.update_notice.configure(text=f"❌ Update failed: {msg}", text_color="#f87171")
+                        if hasattr(self, "update_button") and self.update_button.winfo_exists():
+                            self.update_button.configure(state="normal", text="🔄 Retry Update")
+                    except Exception:
+                        pass
+                self.after(0, on_err)
+
         threading.Thread(target=work, daemon=True).start()
     
     def show_onboarding(self):

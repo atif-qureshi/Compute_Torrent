@@ -173,16 +173,23 @@ class PetalsControl:
         # Docker Desktop. Add it only on the coordinator PC itself; on a remote
         # volunteer PC it would point back to that volunteer and break DHT join.
         if not same_host:
-            if coordinator_ip is None:
-                raise RuntimeError("Coordinator address must resolve to a private LAN IPv4 address")
-            try:
-                with socket.create_connection((str(coordinator_ip), 31331), timeout=5):
-                    pass
-            except OSError as exc:
-                raise RuntimeError(
-                    f"Cannot reach coordinator DHT bootstrap at {coordinator_ip}:31331 from this PC. "
-                    "Allow inbound TCP 31331 on the coordinator's private LAN firewall and confirm both PCs are on the same LAN."
-                ) from exc
+            # Extract target DHT coordinator IP from bootstrap list instead of coordinator_ip (which could be ngrok cloud proxy)
+            dht_target_ip = None
+            for b_peer in data.get("bootstrap", []):
+                match = re.search(r"/ip4/([0-9.]+)/tcp/31331", b_peer)
+                if match:
+                    dht_target_ip = match.group(1)
+                    break
+            target_to_check = dht_target_ip or (str(coordinator_ip) if coordinator_ip and not coordinator_ip.is_loopback else None)
+            if target_to_check:
+                try:
+                    with socket.create_connection((target_to_check, 31331), timeout=5):
+                        pass
+                except OSError as exc:
+                    raise RuntimeError(
+                        f"Cannot reach coordinator DHT bootstrap at {target_to_check}:31331 from this PC. "
+                        "Allow inbound TCP 31331 on the coordinator's private LAN firewall and confirm both PCs are on the same LAN."
+                    ) from exc
         for peer in data.get("bootstrap", []):
             if not same_host:
                 peer = re.sub(r"^/dns4/host\.docker\.internal(?=/tcp/)", f"/ip4/{coordinator_ip}", peer)

@@ -374,6 +374,39 @@ export default function Home() {
                   Send this join code to volunteer peers so their app can enroll with your network.
                 </small>
               </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '14px', paddingTop: '12px', borderTop: '1px solid rgba(255, 255, 255, 0.08)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ fontSize: '11px', fontWeight: 700, color: '#c084fc' }}>📦 VOLUNTEER CLIENT APP</span>
+                  <span style={{ fontSize: '10px', color: '#38bdf8', fontWeight: 600 }}>Windows .exe</span>
+                </div>
+                <a
+                  href="/api/download-provider" download="ComputeTorrent_Seeder.exe"
+                  target="_blank"
+                  rel="noreferrer"
+                  className={styles.actionButton}
+                  style={{
+                    textAlign: 'center',
+                    textDecoration: 'none',
+                    background: 'linear-gradient(135deg, #7c3aed, #4f46e5)',
+                    color: '#ffffff',
+                    fontWeight: 700,
+                    padding: '10px 14px',
+                    borderRadius: '8px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '8px',
+                    boxShadow: '0 4px 14px rgba(124, 58, 237, 0.35)'
+                  }}
+                >
+                  <span>⬇️</span>
+                  <span>Download Provider Client (.exe)</span>
+                </a>
+                <small style={{ color: '#64748b', fontSize: '11px' }}>
+                  Share this download link or install it on volunteer nodes to start providing computing power.
+                </small>
+              </div>
             </div>
 
             {/* Quick Navigation Card */}
