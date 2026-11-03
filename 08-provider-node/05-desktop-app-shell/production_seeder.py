@@ -768,8 +768,13 @@ class ComputeTorrentSeeder(ctk.CTk):
                     try:
                         async for message in websocket:
                             await self.handle_message(message)
-                    except websockets.exceptions.ConnectionClosed:
-                        self.update_status("🔄 Reconnecting...")
+                    except websockets.exceptions.ConnectionClosed as close_err:
+                        if getattr(close_err, "code", None) == 1008:
+                            self.update_status("⚠️ Invalid credential. Re-enrolling...")
+                            self.access_token = None
+                            self.node_id = None
+                        else:
+                            self.update_status("🔄 Reconnecting...")
                     finally:
                         heartbeat_task.cancel()
                         self.websocket = None
