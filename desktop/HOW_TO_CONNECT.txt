@@ -1,0 +1,27 @@
+===================================================================
+             ComputeTorrent Provider Node Instructions
+===================================================================
+
+This lightweight package allows your computer to join the ComputeTorrent
+distributed network as a compute volunteer without needing the backend stack.
+
+REQUIREMENTS:
+1. Python (3.10 or newer) installed with "Add to PATH" checked.
+2. (Optional for GGUF tasks): Docker Desktop installed and running.
+
+HOW TO RUN:
+1. Double-click "Run-Provider.bat".
+   (It will check and install any missing Python dependencies automatically).
+
+2. When the desktop window opens:
+   - Server Address (Link):
+     Enter the Coordinator's WebSocket URL
+     (e.g., wss://other-crewless-unaudited.ngrok-free.dev/ws/seeder)
+   
+   - One-Time Enrollment Code:
+     local-volunteer-join
+
+3. Click "Connect & Join Compute Network".
+
+Your PC will now be connected to the cluster and ready to earn credits!
+===================================================================
