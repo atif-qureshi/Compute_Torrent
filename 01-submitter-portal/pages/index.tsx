@@ -40,7 +40,7 @@ export default function Home() {
   const [publicAddress, setPublicAddress] = useState<string | null>(null)
   const [copiedLan, setCopiedLan] = useState(false)
   const [copiedPublic, setCopiedPublic] = useState(false)
-  const [enrollmentToken, setEnrollmentToken] = useState('')
+  const [enrollmentToken, setEnrollmentToken] = useState('local-volunteer-join')
   const [copiedToken, setCopiedToken] = useState(false)
   const [isRefreshing, setIsRefreshing] = useState(false)
 
@@ -53,8 +53,8 @@ export default function Home() {
         if (data.address) setProviderAddress(data.address)
         else setProviderAddress(fallback)
         if (data.lan_address) setLanAddress(data.lan_address)
-        setPublicAddress(data.public_address || null)
-        setEnrollmentToken(data.enrollment_token || '')
+        if (data.public_address) setPublicAddress(data.public_address)
+        if (data.enrollment_token) setEnrollmentToken(data.enrollment_token)
       })
       .catch(() => setProviderAddress(fallback))
   }, [])
@@ -93,7 +93,7 @@ export default function Home() {
     return () => clearInterval(timer)
   }, [refresh])
 
-  const onlineSeeders = seeders.filter((node) => (typeof node.control_age_seconds === 'number' || ['online', 'idle', 'busy', 'paused'].includes(node.state || node.status)))
+  const onlineSeeders = seeders.filter((node) => ['online', 'idle', 'busy'].includes(node.state || node.status))
   const visibleTasks = taskFilter === 'all' ? tasks : tasks.filter((task) => task.status === taskFilter)
   const coordinatorOnline = health?.status === 'healthy'
 
@@ -215,7 +215,7 @@ export default function Home() {
             ) : (
               <div className={styles.workerList}>
                 {seeders.map((node) => {
-                  const isOnline = (typeof node.control_age_seconds === 'number' || ['online', 'idle', 'busy', 'paused'].includes(node.state || node.status))
+                  const isOnline = ['online', 'idle', 'busy'].includes(node.state || node.status)
                   const profile = node.profile || {}
                   return (
                     <article className={styles.nodeCard} key={node.node_id}>
@@ -238,10 +238,6 @@ export default function Home() {
                           {node.state || node.status || 'offline'}
                         </span>
                       </div>
-
-                      {typeof node.control_age_seconds === 'number' && (
-                        <small>Control heartbeat {Math.round(node.control_age_seconds)}s ago</small>
-                      )}
 
                       {/* Specs Badge Grid */}
                       <div className={styles.nodeSpecGrid}>
@@ -357,16 +353,15 @@ export default function Home() {
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '12px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span style={{ fontSize: '11px', fontWeight: 700, color: '#f59e0b' }}>🔑 PROVIDER JOIN CODE</span>
+                  <span style={{ fontSize: '11px', fontWeight: 700, color: '#f59e0b' }}>🔑 ONE-TIME PROVIDER JOIN CODE</span>
                   <span style={{ fontSize: '10px', color: '#34d399', fontWeight: 600 }}>Required for Clients</span>
                 </div>
                 <div className={styles.networkAddressRow} style={{ borderColor: 'rgba(245, 158, 11, 0.4)' }}>
-                  <code style={{ color: '#fde68a' }}>{enrollmentToken || 'Enrollment unavailable'}</code>
+                  <code style={{ color: '#fde68a' }}>{enrollmentToken}</code>
                   <button
                     type="button"
                     className={styles.copyAddressBtn}
                     onClick={() => {
-                      if (!enrollmentToken) return
                       navigator.clipboard.writeText(enrollmentToken)
                       setCopiedToken(true)
                       setTimeout(() => setCopiedToken(false), 2200)
@@ -385,8 +380,31 @@ export default function Home() {
                   <span style={{ fontSize: '11px', fontWeight: 700, color: '#c084fc' }}>📦 VOLUNTEER CLIENT APP</span>
                   <span style={{ fontSize: '10px', color: '#38bdf8', fontWeight: 600 }}>Windows .exe</span>
                 </div>
+                <a
+                  href="/api/download-provider" download="ComputeTorrent_Seeder.exe"
+                  target="_blank"
+                  rel="noreferrer"
+                  className={styles.actionButton}
+                  style={{
+                    textAlign: 'center',
+                    textDecoration: 'none',
+                    background: 'linear-gradient(135deg, #7c3aed, #4f46e5)',
+                    color: '#ffffff',
+                    fontWeight: 700,
+                    padding: '10px 14px',
+                    borderRadius: '8px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '8px',
+                    boxShadow: '0 4px 14px rgba(124, 58, 237, 0.35)'
+                  }}
+                >
+                  <span>⬇️</span>
+                  <span>Download Provider Client (.exe)</span>
+                </a>
                 <small style={{ color: '#64748b', fontSize: '11px' }}>
-                  Ask your operator for the approved Windows installer.
+                  Share this download link or install it on volunteer nodes to start providing computing power.
                 </small>
               </div>
             </div>

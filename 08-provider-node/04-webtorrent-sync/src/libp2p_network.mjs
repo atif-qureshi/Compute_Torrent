@@ -3,7 +3,6 @@ import { tcp } from "@libp2p/tcp";
 import { noise } from "@libp2p/noise";
 import { yamux } from "@chainsafe/libp2p-yamux";
 import { identify } from "@libp2p/identify";
-import { ping } from "@libp2p/ping";
 import { kadDHT, removePublicAddressesMapper } from "@libp2p/kad-dht";
 import { circuitRelayTransport } from "@libp2p/circuit-relay-v2";
 import { bootstrap } from "@libp2p/bootstrap";
@@ -27,7 +26,7 @@ export async function joinRelayNetwork(bootstrapAddress) {
     connectionEncrypters: [noise()],
     streamMuxers: [yamux()],
     peerDiscovery,
-    services: { identify: identify(), ping: ping(), dht: dht() },
+    services: { identify: identify(), dht: dht() },
   });
   if (bootstrapAddress) {
     try { await node.dial(multiaddr(bootstrapAddress)); } catch (error) {

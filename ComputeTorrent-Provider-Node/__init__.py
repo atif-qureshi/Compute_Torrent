@@ -1,1 +1,0 @@
-"""Standalone ComputeTorrent provider application."""

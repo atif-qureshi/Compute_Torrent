@@ -1,4 +1,6 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
+import fs from 'fs'
+import path from 'path'
 import { hasValidSession } from '../../lib/session'
 
 export default async function providerAddress(req: NextApiRequest, res: NextApiResponse) {
@@ -12,29 +14,41 @@ export default async function providerAddress(req: NextApiRequest, res: NextApiR
   const configuredHost = (process.env.COMPUTETORRENT_PROVIDER_LAN_HOST || '192.168.100.7').trim()
   const lanAddress = `ws://${configuredHost}:8001/ws/seeder`
   let publicAddress: string | null = null
-  let enrollmentToken: string | null = null
+  let enrollmentToken = 'local-volunteer-join'
 
-  // Publish a candidate only while the inspector confirms the coordinator upstream.
+  // 1. Try reading from runtime/public_tunnel.json
   try {
-    const response = await fetch('http://host.docker.internal:4040/api/tunnels', { signal: AbortSignal.timeout(1000) })
-    if (response.ok) {
-      const data = await response.json()
-      const tunnel = data.tunnels?.find((t: any) =>
-        t.public_url?.startsWith('https://') &&
-        /^(?:http:\/\/)?(?:127\.0\.0\.1|localhost):8001\/?$/.test(t.config?.addr || '')
-      )
-      if (tunnel) {
-        const candidate = new URL(tunnel.public_url)
-        if (!candidate.username && !candidate.password && !candidate.search && !candidate.hash) {
-          publicAddress = `wss://${candidate.host}/ws/seeder`
-        }
+    const tunnelPath = path.join(process.cwd(), 'runtime', 'public_tunnel.json')
+    if (fs.existsSync(tunnelPath)) {
+      const data = JSON.parse(fs.readFileSync(tunnelPath, 'utf8'))
+      if (data.ws_url) {
+        publicAddress = data.ws_url
+      }
+      if (data.enrollment_token) {
+        enrollmentToken = data.enrollment_token
       }
     }
   } catch {
-    // Inspector unavailable. Leave the public candidate unset.
+    // Ignore
   }
 
-  // Fetch live enrollment token from orchestrator
+  // 2. Try querying local ngrok inspector if tunnel file wasn't found
+  if (!publicAddress) {
+    try {
+      const response = await fetch('http://host.docker.internal:4040/api/tunnels', { signal: AbortSignal.timeout(1000) })
+      if (response.ok) {
+        const data = await response.json()
+        const httpsTunnel = data.tunnels?.find((t: any) => t.public_url?.startsWith('https:'))
+        if (httpsTunnel?.public_url) {
+          publicAddress = `${httpsTunnel.public_url.replace(/^https:/, 'wss:')}/ws/seeder`
+        }
+      }
+    } catch {
+      // Ngrok not running on host
+    }
+  }
+
+  // 3. Try fetching live enrollment token from orchestrator
   const orchestratorApi = process.env.COMPUTETORRENT_ORCHESTRATOR_API_URL || 'http://orchestrator:8001/api'
   const apiToken = process.env.COMPUTETORRENT_API_TOKEN || ''
   try {

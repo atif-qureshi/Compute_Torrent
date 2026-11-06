@@ -9,7 +9,6 @@ from pydantic import BaseModel
 from typing import Optional, List, Dict, Literal
 from datetime import datetime
 import json
-import time
 import asyncio
 import uuid
 import os
@@ -265,51 +264,23 @@ API_TOKEN = os.getenv("COMPUTETORRENT_API_TOKEN", "").strip()
 SEEDER_ENROLLMENT_TOKEN = os.getenv("COMPUTETORRENT_SEEDER_ENROLLMENT_TOKEN", "").strip()
 PROVIDER_UPDATE_DIR = Path(os.getenv("COMPUTETORRENT_PROVIDER_UPDATE_DIR", "/data/provider-updates"))
 
-
 @app.get("/api/provider-update/manifest")
 def provider_update_manifest():
-    """Return the JSON manifest for the latest provider installer."""
     manifest_file = PROVIDER_UPDATE_DIR / "manifest.json"
     if not manifest_file.is_file():
-        raise HTTPException(404, "No provider update available")
-    try:
-        import json as _json
-        manifest = _json.loads(manifest_file.read_text(encoding="utf-8-sig"))
-    except Exception:
-        raise HTTPException(503, "Provider update manifest is unreadable")
-    if not isinstance(manifest, dict) or not manifest.get("filename") or not manifest.get("sha256"):
-        raise HTTPException(503, "Provider update manifest is malformed")
+        raise HTTPException(404, "No provider update published")
+    manifest = json.loads(manifest_file.read_text(encoding="utf-8-sig"))
+    if manifest.get("filename") != "ComputeTorrent_Seeder.exe" or not isinstance(manifest.get("sha256"), str):
+        raise HTTPException(503, "Invalid provider update manifest")
     return manifest
-
 
 @app.get("/api/provider-update/download")
 def provider_update_download():
-    """Stream the latest provider installer (.exe) file."""
-    manifest_file = PROVIDER_UPDATE_DIR / "manifest.json"
-    if not manifest_file.is_file():
-        raise HTTPException(404, "No provider update available")
-    try:
-        import json as _json
-        manifest = _json.loads(manifest_file.read_text(encoding="utf-8-sig"))
-    except Exception:
-        raise HTTPException(503, "Provider update manifest is unreadable")
-    filename = manifest.get("filename", "")
-    if not filename:
-        raise HTTPException(503, "Provider update manifest missing filename")
-    package = PROVIDER_UPDATE_DIR / filename
-    if not package.is_file():
-        raise HTTPException(503, "Provider update package not found on server")
-    expected_size = manifest.get("size", 0)
-    actual_size = package.stat().st_size
-    if expected_size and actual_size != expected_size:
-        raise HTTPException(503, "Provider update package size mismatch")
-    return FileResponse(
-        str(package),
-        media_type="application/octet-stream",
-        filename=filename,
-        headers={"Content-Length": str(actual_size)},
-    )
-
+    manifest = provider_update_manifest()
+    package = PROVIDER_UPDATE_DIR / manifest["filename"]
+    if not package.is_file() or package.stat().st_size != manifest.get("size"):
+        raise HTTPException(503, "Provider update package is unavailable")
+    return FileResponse(package, media_type="application/octet-stream", filename=package.name)
 
 def valid_api_token(value: Optional[str]) -> bool:
     if not API_TOKEN or not value or not value.startswith("Bearer "):
@@ -327,9 +298,6 @@ async def protect_api(request: Request, call_next):
     return await call_next(request)
 
 # WebSocket connection manager
-PROVIDER_HEARTBEAT_TIMEOUT = 45
-
-
 class ConnectionManager:
     def __init__(self):
         self.active_seeders: Dict[str, WebSocket] = {}
@@ -338,22 +306,15 @@ class ConnectionManager:
     
     async def connect(self, node_id: str, websocket: WebSocket):
         self.active_seeders[node_id] = websocket
-        self.seeder_info.setdefault(node_id, {})["last_seen"] = time.monotonic()
         print(f"✅ Seeder connected: {node_id}")
-
-    def disconnect(self, node_id: str, websocket: WebSocket):
-        if self.active_seeders.get(node_id) is not websocket:
-            return False
-        del self.active_seeders[node_id]
-        self.seeder_info.setdefault(node_id, {}).update(busy=False, state="offline")
-        return True
-
-    def control_age(self, node_id: str):
-        info = self.seeder_info.get(node_id, {})
-        if node_id not in self.active_seeders or "last_seen" not in info:
-            return None
-        return round(max(0.0, time.monotonic() - info["last_seen"]), 1)
-
+    
+    def disconnect(self, node_id: str):
+        if node_id in self.active_seeders:
+            del self.active_seeders[node_id]
+            print(f"❌ Seeder disconnected: {node_id}")
+        self.seeder_info.setdefault(node_id, {})["busy"] = False
+        self.seeder_info.setdefault(node_id, {})["state"] = "offline"
+    
     async def send_to_seeder(self, message: dict, node_id: str):
         if node_id in self.active_seeders:
             try:
@@ -751,16 +712,14 @@ async def list_seeders():
                     "profile": manager.seeder_info.get(s.node_id, {}).get("profile", s.profile or {}),
                     "tasks_completed": s.tasks_completed,
                     "credits_earned": s.credits_earned,
-                    "last_heartbeat": s.last_heartbeat.isoformat(),
-                    "control_age_seconds": manager.control_age(s.node_id)
+                    "last_heartbeat": s.last_heartbeat.isoformat()
                 }
                 for s in seeders
             ]
         finally:
             db.close()
     else:
-        return [{**row, "control_age_seconds": manager.control_age(node_id)}
-                for node_id, row in MOCK_SEEDERS.items()]
+        return list(MOCK_SEEDERS.values())
 
 @app.delete("/api/seeders/{node_id}/credential")
 async def revoke_seeder(node_id: str):
@@ -865,19 +824,13 @@ async def websocket_seeder(websocket: WebSocket):
         await websocket.accept()
         
         # Wait for registration
-        register_msg = await asyncio.wait_for(websocket.receive_text(), timeout=15)
+        register_msg = await websocket.receive_text()
         data = json.loads(register_msg)
         
-        if not isinstance(data, dict) or data.get("type") != "register":
-            await websocket.close(code=1008, reason="Registration required")
-            return
         if data.get("type") == "register":
             node_id = data.get("node_id")
             tier = data.get("tier")
             profile = data.get("profile")
-            if not isinstance(node_id, str) or not isinstance(profile, dict) or type(tier) is not int:
-                await websocket.close(code=1008, reason="Invalid registration")
-                return
             supplied_hash = hashlib.sha256((websocket.headers.get("authorization", "")[7:]
                                                if websocket.headers.get("authorization", "").startswith("Bearer ") else "").encode("utf-8")).hexdigest()
             if DB_AVAILABLE:
@@ -893,10 +846,6 @@ async def websocket_seeder(websocket: WebSocket):
                 await websocket.close(code=1008, reason="Provider enrollment is invalid or revoked")
                 return
             
-            if node_id in manager.active_seeders:
-                await websocket.close(code=1013, reason="Provider already connected")
-                return
-
             # Store seeder info
             tasks_completed = 0
             credits_earned = 0.0
@@ -947,7 +896,7 @@ async def websocket_seeder(websocket: WebSocket):
                 credits_earned = MOCK_SEEDERS[node_id]["credits_earned"]
             
             await manager.connect(node_id, websocket)
-            manager.seeder_info[node_id].update(profile=profile or {}, state="idle", busy=False)
+            manager.seeder_info[node_id] = {"profile": profile or {}, "state": "idle", "busy": False}
             
             # Send ack
             await websocket.send_text(json.dumps({
@@ -961,26 +910,15 @@ async def websocket_seeder(websocket: WebSocket):
             # Try allocating tasks
             await allocate_pending_tasks()
             
-            # Work messages cannot extend a stale heartbeat lease.
+            # Message loop
             while True:
-                remaining = PROVIDER_HEARTBEAT_TIMEOUT - (time.monotonic() - manager.seeder_info[node_id]["last_seen"])
-                if remaining <= 0:
-                    raise asyncio.TimeoutError
-                message = await asyncio.wait_for(websocket.receive_text(), timeout=remaining)
+                message = await websocket.receive_text()
                 data = json.loads(message)
-                if not isinstance(data, dict):
-                    await websocket.close(code=1008, reason="Invalid provider message")
-                    return
                 await handle_seeder_message(node_id, data)
-
+                
     except WebSocketDisconnect:
-        pass
-    except asyncio.TimeoutError:
-        await websocket.close(code=1013, reason="Provider heartbeat expired")
-    except (ValueError, TypeError):
-        await websocket.close(code=1008, reason="Invalid provider message")
-    finally:
-        if node_id and manager.disconnect(node_id, websocket):
+        if node_id:
+            manager.disconnect(node_id)
             if DB_AVAILABLE:
                 db = get_db()
                 try:
@@ -1022,8 +960,7 @@ async def handle_seeder_message(node_id: str, data: dict):
     msg_type = data.get("type")
     
     if msg_type == "heartbeat":
-        manager.seeder_info.setdefault(node_id, {})["last_seen"] = time.monotonic()
-        manager.seeder_info[node_id]["state"] = data.get("state", "online")
+        manager.seeder_info.setdefault(node_id, {})["state"] = data.get("state", "online")
         if data.get("profile"):
             incoming_profile = dict(data["profile"])
             previous_profile = manager.seeder_info[node_id].get("profile", {})
