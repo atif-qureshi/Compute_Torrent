@@ -1,0 +1,97 @@
+# ComputeTorrent implementation progress
+
+Roadmap authority is [flow.md](../flow.md). This tracker uses its task IDs, independently of the historical MVP checklist. “Completed” for Phase 0 means the audit task and its available verification are finished. It does not certify the audited feature.
+
+| Phase | Task ID | Description | Status | Dependencies | Modified files | Validation | Notes |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 0 | 0.1 | Inspect repository structure | Completed | — | architecture-analysis.md | Reviewed tracked inventory and previous progress reports | Canonical and alternate trees identified. |
+| 0 | 0.2 | Identify component ownership | Completed | 0.1 | architecture-analysis.md | Traced Compose services, entry points and module imports | Dependency diagram recorded. |
+| 0 | 0.3 | Audit stack and dependencies | Completed | 0.2 | architecture-analysis.md, testing-results.md | Reviewed dependency manifests, Dockerfiles and installed host versions | Build reproducibility gaps recorded. |
+| 0 | 0.4 | Trace inference and results | Completed | 0.3 | architecture-analysis.md, research-mapping.md | Followed both inference call paths and ran provider/network regressions | Runtime completion not verified in this pass. |
+| 0 | 0.5 | Audit peer discovery and communications | Completed | 0.4 | architecture-analysis.md, testing-results.md | Inspected provider registration, bootstrap, helper and worker code; 15 unit checks passed | Three transport paths documented separately. |
+| 0 | 0.6 | Check Tailscale and actual remote integration | Completed | 0.5 | architecture-analysis.md | Tracked-source search and ngrok/portal address trace | Host VPN configuration outside checkout was not inspected. |
+| 0 | 0.7 | Audit installation and update mechanisms | Completed | 0.6 | architecture-analysis.md, testing-results.md | Traced build, download and updater; inspected artifact version, size and digest | TLS, raw EXE download and version drift findings recorded. |
+| 0 | 0.8 | Audit dashboard routing and state | Completed | 0.7 | architecture-analysis.md, testing-results.md | Inspected routes, shared navigation, proxy and polling; TypeScript check passed | Browser UX evaluation remains pending. |
+| 0 | 0.9 | Identify bugs and limitations | Completed | 0.8 | architecture-analysis.md, development-roadmap.md, testing-results.md | Two parser exceptions reproduced; high-severity findings tied to source | Remediation deferred to approved phases. |
+| 0 | 0.10 | Audit tests, environment, builds and deployment | Completed | 0.9 | architecture-analysis.md, testing-results.md, development-roadmap.md | Both Compose configurations validated with appropriate environment selection; daemon unavailable | Live checks remain unverified. |
+| 1 | 1.1–1.7 | Analyze papers and map methods | Completed | Phase 0.5 research approval | research-mapping.md, architecture-analysis.md, implementation-progress.md, flow.md | Supplied PDF sections and publication records compared with active source | Phase 2 awaits approval. |
+
+Phase 0 completed on 2026-11-06. Five roadmap documents were created. Existing code, historical progress files, and the supplied roadmap remain as found.
+
+## Emergency provider update security checkpoint
+
+| Phase | Task ID | Description | Status | Dependencies | Modified files | Validation | Notes |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Emergency | E.1 | Contain legacy feed and preserve evidence | Completed | User authorization | Coordinator routes, portal, provider build script | Legacy serving removed in source; stopped local containers and artifact fingerprints recorded | Existing binaries and remote infrastructure require separate migration. |
+| Emergency | E.2 | Investigate legacy update trust chain | Completed | E.1 | security-update-audit.md | Traced route, client, build and replacement code | No compromise determination from available evidence. |
+| Emergency | E.3 | Implement authenticated client and installer handoff | Completed | E.2 | Canonical and legacy desktop shell | Signed metadata, verified HTTPS, channel/version checks, staged digest and replay state | Trust anchors remain unprovisioned pending approved release setup. |
+| Emergency | E.4 | Isolated security validation | Completed | E.3 | test_secure_provider_update.py | Mock signer, transfer and process boundary tests | Real Windows wizard and hosted TLS validation remain release gates. |
+| Emergency | E.5 | Deploy and migrate existing clients | Pending | Separate deployment and publication approval | — | Not performed | Phase 1 paused pending review. |
+
+Phase 1 paper reading began before the emergency request and was resumed after research approval.
+
+## Phase 0.5 checkpoint
+
+| Task ID | Status | Evidence and next action |
+| --- | --- | --- |
+| 0.5.1 Security review | Completed | Client trust checks, actual loopback TLS, signer and replay checks passed within the recorded threat model. |
+| 0.5.2 Legacy migration | Plan completed, rollout blocked | Logs and local state reviewed. Remote inventory, retirement and trusted manual migration require approval and operator access. |
+| 0.5.3 Windows install | Blocked | Isolated Windows environment unavailable. Run clean install, update and recovery matrix before release. |
+| 0.5.4 Release infrastructure | Blocked | Review completed. Host, signing infrastructure, publisher authorization, Authenticode, audit logging and disablement drill pending. |
+| 0.5.5 Regression | Partial | 22 tests and isolated API, source UI and type checks passed. Live/browser/device/model checks remain pending. |
+| 0.5.6 Documentation | Completed | See [release readiness](provider-release-readiness.md), [audit](security-update-audit.md), and [testing results](testing-results.md). |
+
+Phase 0.5 checkpoint approved for research and development only. Release gates remain independently blocked.
+
+## Phase 1 checkpoint
+
+| Task | Status | Evidence |
+| --- | --- | --- |
+| 1.1 Study Petals papers | Completed | Both supplied papers identified and mapped, including routing, caches, balancing and recovery. |
+| 1.2 Analyze Sun et al. | Completed | Offline CG-BPRR and online CG-BP/WS-RR, measurement model, feasibility and assumptions documented. |
+| 1.3–1.5 Applicability, comparison and gaps | Completed | Traced active placement, provider telemetry, worker startup, DHT, route generation, verification and unused planner helpers. |
+| 1.6 Integration strategy | Completed | Later-phase dependency order, one-request experiment, baselines, metrics and failure gates recorded. |
+| 1.7 Attribution | Completed | Published methods distinguished from ComputeTorrent engineering proposals. |
+
+This is a documentation and source review checkpoint. Runtime experiments remain pending. No networking implementation, service restart, deployment, release or legacy endpoint reactivation was authorized. Stop here for Phase 2 review.
+
+## Phase 2 checkpoint
+
+| Tasks | Status | Evidence |
+| --- | --- | --- |
+| 2.1–2.3 Failure analysis, LAN/Internet and NAT | Completed | Source trace of coordinator, discovery, file transfer and Petals. Reported remote incident could not be reproduced. |
+| 2.4–2.7 Protocols, native client, relay and trade-offs | Completed | Compared direct TCP, WSS, ICE/STUN/TURN and libp2p relay against actual protocol boundaries. |
+| 2.8–2.10 Connection workflow, identity and fallback | Completed | Proposed bounded probes, relay authorization, reconnection and scheduler eligibility. |
+
+See [network design](network-design.md). Four existing Petals network tests passed. The relay prototype and live acceptance matrix remain pending. Phase 3 awaits approval.
+
+## Phase 3 implementation checkpoint
+
+| Tasks | Status | Evidence |
+| --- | --- | --- |
+| 3.1 Local discovery | Partial | Existing helper confirmation is checked. Automated discovery and multi-device testing pending. |
+| 3.2 Registration and identity | Partial | Configured enrollment, origin binding and registration acknowledgment tested. One-use invites and runtime proof-of-possession pending. |
+| 3.3–3.5 Global connectivity, NAT and relay | Partial | ngrok control hardening in source and isolated TLS TCP relay fixture. No pinned runtime integration or cross-network validation. |
+| 3.6–3.8 Health, reconnect and dashboard | Implemented and isolated tests passed | Lease expiry, duplicate handling, reconnect, and heartbeat age. Live UI/device validation pending. |
+| 3.9 Tailscale migration | Pending verification | No tracked mandatory dependency. Replacement onboarding requires device acceptance. |
+| 3.10 Inference compatibility | Partial | Existing Petals regressions passed. Direct and relayed live inference remain pending. |
+
+See the [Phase 3 implementation record](phase-3-connectivity.md). Phase 3 is open and Phase 4 has not started.
+
+### Phase 3 continuation
+
+- Pinned Petals and Hivemind compatibility reviewed from the cached image and active source. Direct and custom WSS bootstrap and DHT lookups passed in two isolated runs. The native relay fixture did not announce a circuit.
+- One additional regression verified that an unpaired relay closes on lease expiry and denies a late peer. All 26 regression tests passed.
+- Offline BLOOM 560M load attempted. The incomplete checkpoint blocked model worker startup, real block discovery and end-to-end inference. Route integration and real network acceptance remain pending.
+- [Network architecture and measurements](network-architecture.md) records reproduction, comparison limits and the device test matrix.
+- **Partially Validated — Remaining Integration Tests Pending.** Conditional approval permits Phase 4. Keep real multi-peer inference, different ISP, CGNAT, restrictive firewall and reconnection tests open. Global P2P is not production-ready. Retain the Tailscale development fallback and updater and release restrictions.
+
+## Phase 4 checkpoint
+
+| Tasks | Status | Evidence |
+| --- | --- | --- |
+| 4.1–4.4 Source review, startup, onboarding and connect/disconnect | Implemented | Operator address normalization, single connection lifecycle and cancel-to-onboarding tested. |
+| 4.5–4.7 Status, resource display and controls | Implemented | Matching coordinator acknowledgment gates Registered. Hidden Windows widgets and active-task controls verified. |
+| 4.8–4.10 Recovery, actionable errors and stability | Implemented | Loopback disconnect, reconnection, identity rejection and loss during a busy handler tested. |
+
+[Phase 4 implementation record](phase-4-provider-connection.md) documents the canonical provider changes. Eight focused tests and the 26 existing regressions passed. Real volunteer acceptance remains pending. Phase 5 has not started.
