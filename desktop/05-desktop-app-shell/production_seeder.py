@@ -1,10 +1,15 @@
 import customtkinter as ctk
 import asyncio
+import ipaddress
+import random
+import socket
+import ssl
 import threading
 import psutil
 import subprocess
 import csv
 import websockets
+from websockets.legacy.client import Connect
 import json
 import time
 from datetime import datetime
@@ -35,6 +40,106 @@ if getattr(sys, "frozen", False):
     if node_binary.is_file():
         os.environ.setdefault("COMPUTETORRENT_NODE", str(node_binary))
 
+def coordinator_endpoint(value):
+    parsed = urlsplit(value)
+    if (parsed.scheme not in {"ws", "wss"} or not parsed.hostname or parsed.username is not None
+            or parsed.path != "/ws/seeder" or parsed.query or parsed.fragment):
+        raise ValueError("Enter a coordinator URL ending in /ws/seeder")
+    port = parsed.port
+    if port == 0:
+        raise ValueError("Coordinator port must be between 1 and 65535.")
+    if parsed.scheme == "ws" and parsed.hostname != "localhost":
+        private_ranges = ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
+                          "127.0.0.0/8", "::1/128", "fc00::/7")
+        try:
+            address = ipaddress.ip_address(parsed.hostname)
+            allowed = any(address in ipaddress.ip_network(net) for net in private_ranges)
+        except ValueError:
+            allowed = False
+        if not allowed:
+            raise ValueError("Remote coordinators require wss://")
+    return parsed.scheme, parsed.hostname, port or (443 if parsed.scheme == "wss" else 80)
+
+
+def normalize_coordinator_address(value):
+    """Accept a copied operator address or a simple private LAN IP."""
+    value = value.strip()
+    if not value:
+        raise ValueError("Paste the coordinator address from your operator.")
+    if "://" not in value:
+        try:
+            address = ipaddress.ip_address(value)
+        except ValueError:
+            local = urlsplit("ws://" + value)
+            if local.path in {"", "/", "/ws/seeder"}:
+                try:
+                    endpoint = urlunsplit(local._replace(path="/ws/seeder"))
+                    coordinator_endpoint(endpoint)
+                except ValueError:
+                    pass
+                else:
+                    if local.port is None:
+                        endpoint = urlunsplit(local._replace(netloc=f"{local.netloc}:8001", path="/ws/seeder"))
+                    return endpoint
+            value = "wss://" + value
+        else:
+            host = f"[{address}]" if address.version == 6 else str(address)
+            candidate = f"ws://{host}:8001/ws/seeder"
+            try:
+                coordinator_endpoint(candidate)
+            except ValueError:
+                value = "wss://" + host
+            else:
+                return candidate
+    parsed = urlsplit(value)
+    scheme = {"https": "wss", "http": "ws"}.get(parsed.scheme, parsed.scheme)
+    if parsed.path in {"", "/"}:
+        parsed = parsed._replace(path="/ws/seeder")
+    endpoint = urlunsplit(parsed._replace(scheme=scheme))
+    coordinator_endpoint(endpoint)
+    return endpoint
+
+
+def connection_failure(error):
+    """Return a safe volunteer-facing message and whether retry may help."""
+    if isinstance(error, urllib.error.HTTPError):
+        if error.code in {401, 403}:
+            return "Join code rejected. Ask the operator for the current code.", False
+        if error.code in {404, 405}:
+            return "This address does not offer enrollment. Ask for the coordinator address.", False
+        if error.code == 503:
+            return "Enrollment is unavailable. Ask the operator to check the coordinator.", False
+        if 300 <= error.code < 400:
+            return "Coordinator redirected enrollment. Ask for its current address.", False
+    if isinstance(error, websockets.exceptions.InvalidStatusCode):
+        if error.status_code in {401, 403}:
+            return "The coordinator refused the connection. Ask the operator to check access.", False
+        if error.status_code in {404, 405}:
+            return "This address does not offer provider connections. Ask for the coordinator address.", False
+    reason = getattr(error, "reason", error)
+    if isinstance(reason, ssl.SSLCertVerificationError):
+        return "The coordinator certificate could not be verified. Check the address with your operator.", False
+    if isinstance(reason, socket.gaierror):
+        return "Coordinator name could not be resolved. Check the address and network.", True
+    if isinstance(reason, (asyncio.TimeoutError, TimeoutError)):
+        return "Coordinator response timed out. Check your network and try again.", True
+    if isinstance(reason, OSError):
+        return "Cannot reach the coordinator. Check your network and the operator address.", True
+    if isinstance(error, ValueError):
+        return "Coordinator response or address is invalid. Check the operator address.", False
+    return "Connection interrupted. The app will try again.", True
+
+
+class EnrollmentNoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+class CoordinatorConnect(Connect):
+    def handle_redirect(self, uri):
+        raise ValueError("Coordinator WebSocket redirects are disabled")
+
+
 def uuid_safe(value):
     return "".join(ch for ch in str(value) if ch.isalnum() or ch in "-_")[:48] or "task"
 
@@ -43,6 +148,7 @@ ctk.set_default_color_theme("blue")
 
 # Configuration
 DEFAULT_ORCHESTRATOR_URL = os.getenv("ORCHESTRATOR_URL", "ws://127.0.0.1:8001/ws/seeder")
+DEFAULT_ENROLLMENT_TOKEN = os.getenv("COMPUTETORRENT_SEEDER_ENROLLMENT_TOKEN", "local-volunteer-join")
 
 class ComputeTorrentSeeder(ctk.CTk):
     def __init__(self):
@@ -62,13 +168,17 @@ class ComputeTorrentSeeder(ctk.CTk):
         self.app_data = Path(os.getenv("LOCALAPPDATA", tempfile.gettempdir())) / "ComputeTorrent"
         self.app_data.mkdir(parents=True, exist_ok=True)
         self.settings_path = self.app_data / "seeder-settings.json"
+        self.settings_lock = threading.Lock()
         try:
             self.settings = json.loads(self.settings_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             self.settings = {}
+        if not isinstance(self.settings, dict):
+            self.settings = {}
         had_legacy_join_code = "enrollment_token" in self.settings
         self.settings.pop("enrollment_token", None)
-        self.recent_work = list(self.settings.get("recent_work", []))[-20:]
+        recent_work = self.settings.get("recent_work", [])
+        self.recent_work = [item for item in recent_work if isinstance(item, dict)][-20:] if isinstance(recent_work, list) else []
         os.environ.setdefault("COMPUTETORRENT_MODELS_DIR", str(self.app_data / "models"))
         self.sync_client = WebTorrentClient(str(self.app_data))
         self.libp2p_process = None
@@ -83,12 +193,20 @@ class ComputeTorrentSeeder(ctk.CTk):
             self.orchestrator_url = DEFAULT_ORCHESTRATOR_URL
         # The network-wide enrollment code is a one-time secret; keep it in
         # memory only and persist only this provider's revocable credential.
-        self.enrollment_token = ""
-        self.cpu_limit = int(self.settings.get("cpu_limit", 2))
-        self.memory_limit_gb = int(self.settings.get("memory_limit_gb", 8))
+        self.enrollment_token = DEFAULT_ENROLLMENT_TOKEN
+        try:
+            self.cpu_limit = max(1, int(self.settings.get("cpu_limit", 2)))
+            self.memory_limit_gb = max(2, int(self.settings.get("memory_limit_gb", 8)))
+        except (TypeError, ValueError, OverflowError):
+            self.cpu_limit, self.memory_limit_gb = 2, 8
         self.paused = False
         self.event_loop = None
         self.shutting_down = False
+        self.connection_thread = None
+        self.connection_task = None
+        self.disconnect_requested = threading.Event()
+        self.connection_state = "Disconnected"
+        self.connection_note = ""
         self.petals = PetalsControl(self.app_data)
         self.petals_enabled = bool(self.settings.get("petals_enabled", True))
         
@@ -309,9 +427,12 @@ class ComputeTorrentSeeder(ctk.CTk):
     def clear_screen(self):
         for widget in self.winfo_children():
             widget.destroy()
-        toolbar = ctk.CTkFrame(self, fg_color="#2e1065", height=48)
+
+        # ── Top toolbar bar ──────────────────────────────────────────────────
+        toolbar = ctk.CTkFrame(self, fg_color="#2e1065", height=52)
         toolbar.pack(fill="x")
-        
+        toolbar.pack_propagate(False)
+
         brand_frame = ctk.CTkFrame(toolbar, fg_color="transparent")
         brand_frame.pack(side="left", padx=(16, 8))
         ctk.CTkLabel(brand_frame, text="⚡ ComputeTorrent", text_color="#c084fc",
@@ -320,130 +441,210 @@ class ComputeTorrentSeeder(ctk.CTk):
         ctk.CTkLabel(brand_frame, text=f"v{curr_ver}", text_color="#a855f7",
                      font=("Arial", 11)).pack(side="left", padx=(6, 0))
 
-        self.update_notice = ctk.CTkLabel(toolbar, text="Checking for updates…", text_color="#cbd5e1",
-                                          font=("Arial", 12))
-        self.update_notice.pack(side="left", padx=16)
-
-        self.update_button = ctk.CTkButton(toolbar, text="Check for updates", width=170,
+        # Update button (right side)
+        self.update_button = ctk.CTkButton(toolbar, text="🔍 Check for Updates", width=180,
                                             fg_color="#7c3aed", hover_color="#6d28d9",
                                             font=("Arial", 12, "bold"),
                                             command=self.update_clicked)
-        self.update_button.pack(side="right", padx=12, pady=6)
-        
+        self.update_button.pack(side="right", padx=12, pady=8)
+
+        # Status label (centre-left)
+        self.update_notice = ctk.CTkLabel(toolbar, text="Checking for updates…", text_color="#94a3b8",
+                                          font=("Arial", 12))
+        self.update_notice.pack(side="left", padx=16)
+
+        # ── Update progress strip (hidden by default, shown during download) ─
+        self._update_banner = ctk.CTkFrame(self, fg_color="#0f172a", height=36)
+        # NOT packed yet — shown only when downloading
+
+        self._update_progress_bar = ctk.CTkProgressBar(
+            self._update_banner,
+            width=460, height=16,
+            corner_radius=8,
+            fg_color="#1e293b",
+            progress_color="#6366f1",
+            mode="determinate",
+        )
+        self._update_progress_bar.set(0)
+        self._update_progress_bar.pack(side="left", padx=(16, 8), pady=10)
+
+        self._update_progress_label = ctk.CTkLabel(
+            self._update_banner, text="0%  —  0.0 / 0.0 MB",
+            font=("Courier New", 11), text_color="#38bdf8"
+        )
+        self._update_progress_label.pack(side="left", padx=(0, 16), pady=10)
+
+        # Restore available_update state if already found
         if getattr(self, "available_update", None):
             manifest, base, is_newer = self.available_update
             if is_newer:
                 size_mb = round(manifest.get("size", 0) / (1024 * 1024), 1)
                 self.update_notice.configure(
-                    text=f"🔥 Update Available: v{manifest.get('version')} ({size_mb} MB)",
+                    text=f"🔥 Update Available: v{manifest.get('version')} ({size_mb} MB) — click to download",
                     text_color="#fbbf24"
                 )
-                self.update_button.configure(text="⬇️ Download & Update", fg_color="#ea580c", hover_color="#c2410c")
+                self.update_button.configure(text="⬇️ Download & Install", fg_color="#ea580c", hover_color="#c2410c")
             else:
                 self.update_notice.configure(
-                    text=f"✅ Provider is up to date (v{manifest.get('version', curr_ver)})",
+                    text=f"✅ Up to date — v{manifest.get('version', curr_ver)}",
                     text_color="#86efac"
                 )
-                self.update_button.configure(text="🔄 Reinstall / Update", fg_color="#7c3aed", hover_color="#6d28d9")
+                self.update_button.configure(text="🔍 Check for Updates", fg_color="#7c3aed", hover_color="#6d28d9")
 
     def check_for_update(self, manual=False):
         if self.shutting_down:
             return
         target_url = self.get_coordinator_url()
+        curr_ver = provider_identity().get("petals_provider_build", "dev")
         if manual:
-            self.update_notice.configure(text="🔍 Contacting coordinator for updates…", text_color="#38bdf8")
-            self.update_button.configure(state="disabled")
+            self._set_update_ui(text="🔍 Contacting coordinator…", color="#38bdf8", btn_text=None, btn_state="disabled")
         def work():
             try:
-                curr_ver = provider_identity().get("petals_provider_build", "dev")
                 manifest, base, is_newer = check_update(target_url, curr_ver)
                 def show():
                     self.available_update = (manifest, base, is_newer)
-                    if hasattr(self, "update_button") and self.update_button.winfo_exists():
-                        self.update_button.configure(state="normal")
-                    if hasattr(self, "update_notice") and self.update_notice.winfo_exists():
-                        if is_newer:
-                            size_mb = round(manifest.get("size", 0) / (1024 * 1024), 1)
-                            self.update_notice.configure(
-                                text=f"🔥 Update Available: v{manifest.get('version')} ({size_mb} MB)",
-                                text_color="#fbbf24"
-                            )
-                            self.update_button.configure(text="⬇️ Download & Update", fg_color="#ea580c", hover_color="#c2410c")
-                        else:
-                            self.update_notice.configure(
-                                text=f"✅ Provider is up to date (v{manifest.get('version', curr_ver)})",
-                                text_color="#86efac"
-                            )
-                            self.update_button.configure(text="🔄 Reinstall / Update", fg_color="#7c3aed", hover_color="#6d28d9")
+                    if is_newer:
+                        size_mb = round(manifest.get("size", 0) / (1024 * 1024), 1)
+                        self._set_update_ui(
+                            text=f"🔥 Update v{manifest.get('version')} available — {size_mb} MB — click to install",
+                            color="#fbbf24",
+                            btn_text="⬇️ Download & Install",
+                            btn_color="#ea580c", btn_hover="#c2410c",
+                        )
+                    else:
+                        self._set_update_ui(
+                            text=f"✅ Up to date — v{manifest.get('version', curr_ver)}",
+                            color="#86efac",
+                            btn_text="🔍 Check for Updates",
+                        )
                 self.after(0, show)
             except Exception as err:
-                def show_err():
-                    if hasattr(self, "update_button") and self.update_button.winfo_exists():
-                        self.update_button.configure(state="normal")
-                    if hasattr(self, "update_notice") and self.update_notice.winfo_exists():
-                        if manual:
-                            self.update_notice.configure(text=f"⚠️ Update check failed: {err}", text_color="#f87171")
-                        else:
-                            self.update_notice.configure(text="Provider updates idle", text_color="#94a3b8")
+                def show_err(err=str(err)):
+                    if manual:
+                        self._set_update_ui(text=f"⚠️ Update check failed: {err[:80]}", color="#f87171")
+                    else:
+                        self._set_update_ui(text="Updates: not available from this coordinator", color="#64748b")
                 self.after(0, show_err)
         threading.Thread(target=work, daemon=True).start()
         self.after(30 * 60 * 1000, self.check_for_update)
 
+    def _set_update_ui(self, text=None, color="#94a3b8", btn_text=None,
+                       btn_color="#7c3aed", btn_hover="#6d28d9", btn_state="normal"):
+        """Thread-safe helper: update the toolbar notice + button in one call."""
+        try:
+            if text and hasattr(self, "update_notice") and self.update_notice.winfo_exists():
+                self.update_notice.configure(text=text, text_color=color)
+            if hasattr(self, "update_button") and self.update_button.winfo_exists():
+                self.update_button.configure(state=btn_state)
+                if btn_text:
+                    self.update_button.configure(text=btn_text, fg_color=btn_color, hover_color=btn_hover)
+        except Exception:
+            pass
+
+    def _show_progress_banner(self):
+        """Pack the download progress strip below the toolbar."""
+        try:
+            if hasattr(self, "_update_banner") and self._update_banner.winfo_exists():
+                self._update_banner.pack(fill="x", after=self.winfo_children()[0])
+        except Exception:
+            pass
+
+    def _hide_progress_banner(self):
+        try:
+            if hasattr(self, "_update_banner") and self._update_banner.winfo_exists():
+                self._update_banner.pack_forget()
+        except Exception:
+            pass
+
+    def _update_progress(self, downloaded, total):
+        """Called from download thread; schedules UI update on main thread."""
+        pct = downloaded / total if total else 0
+        mb_done = downloaded / 1_048_576
+        mb_tot = total / 1_048_576
+        def _do():
+            try:
+                if hasattr(self, "_update_progress_bar") and self._update_progress_bar.winfo_exists():
+                    self._update_progress_bar.set(pct)
+                if hasattr(self, "_update_progress_label") and self._update_progress_label.winfo_exists():
+                    self._update_progress_label.configure(
+                        text=f"{int(pct * 100)}%  —  {mb_done:.1f} / {mb_tot:.1f} MB"
+                    )
+            except Exception:
+                pass
+        self.after(0, _do)
+
     def update_clicked(self):
-        target_url = self.get_coordinator_url()
-        if self.current_task:
-            self.update_notice.configure(text="⚠️ Finish current task before updating", text_color="#fbbf24")
+        # If no update found yet — just trigger a fresh check
+        if not getattr(self, "available_update", None):
+            self.check_for_update(manual=True)
             return
-            
-        self.update_button.configure(state="disabled", text="⏳ Updating...")
-        self.update_notice.configure(text="🚀 Contacting coordinator to download update…", text_color="#38bdf8")
+
+        manifest, base, is_newer = self.available_update
+        if not is_newer:
+            # Re-check in case something changed
+            self.check_for_update(manual=True)
+            return
+
+        if self.current_task:
+            self._set_update_ui(
+                text="⚠️ A task is running — finish it, then click again to update",
+                color="#fbbf24", btn_text="⬇️ Download & Install",
+            )
+            return
+
+        target_url = self.get_coordinator_url()
+        curr_ver = provider_identity().get("petals_provider_build", "dev")
+
+        self._set_update_ui(
+            text=f"⬇️ Starting download of v{manifest.get('version')}…",
+            color="#38bdf8",
+            btn_text="⬇️ Downloading…",
+            btn_state="disabled",
+        )
+        self.after(0, self._show_progress_banner)
 
         def work():
             try:
-                curr_ver = provider_identity().get("petals_provider_build", "dev")
-                manifest, base, is_newer = check_update(target_url, curr_ver)
-                self.available_update = (manifest, base, is_newer)
-                
-                last_pct = [-1]
-                def on_progress(downloaded, total):
-                    pct = int((downloaded / total) * 100) if total else 0
-                    if pct != last_pct[0] or downloaded == total:
-                        last_pct[0] = pct
-                        mb_done = downloaded / (1024 * 1024)
-                        mb_tot = total / (1024 * 1024)
-                        msg = f"⬇️ Downloading update: {pct}% ({mb_done:.1f} MB / {mb_tot:.1f} MB)..."
-                        def _set(m=msg):
-                            try:
-                                if hasattr(self, "update_notice") and self.update_notice.winfo_exists():
-                                    self.update_notice.configure(text=m, text_color="#38bdf8")
-                            except Exception:
-                                pass
-                        self.after(0, _set)
+                # Re-fetch manifest fresh to validate it is still live
+                fresh_manifest, fresh_base, still_newer = check_update(target_url, curr_ver)
+                if not still_newer:
+                    raise ValueError("Update is no longer available from this coordinator")
 
-                staged = stage_update(base, manifest, self.app_data, progress_callback=on_progress)
-                
+                staged = stage_update(
+                    fresh_base, fresh_manifest, self.app_data,
+                    progress_callback=self._update_progress,
+                    current_build=curr_ver,
+                )
+
                 def on_done():
+                    self._hide_progress_banner()
+                    self._set_update_ui(
+                        text="🎉 Download verified — launching installer now…",
+                        color="#a855f7",
+                        btn_text="✅ Installing…",
+                        btn_state="disabled",
+                    )
                     try:
-                        if hasattr(self, "update_notice") and self.update_notice.winfo_exists():
-                            self.update_notice.configure(text="🎉 Update verified! Launching new version...", text_color="#a855f7")
-                        restart_with_update(staged, self.app_data)
-                        self.after(1200, self.close_application)
-                    except Exception as error:
-                        if hasattr(self, "update_notice") and self.update_notice.winfo_exists():
-                            self.update_notice.configure(text=f"❌ Install failed: {error}", text_color="#f87171")
-                        if hasattr(self, "update_button") and self.update_button.winfo_exists():
-                            self.update_button.configure(state="normal", text="🔄 Retry Update")
+                        restart_with_update(staged, self.app_data, current_build=curr_ver)
+                        # Give the installer a moment to launch, then close the app
+                        self.after(1500, self.close_application)
+                    except Exception as install_err:
+                        self._set_update_ui(
+                            text=f"❌ Install failed: {install_err}",
+                            color="#f87171",
+                            btn_text="🔄 Retry",
+                        )
+
                 self.after(0, on_done)
 
             except Exception as error:
                 def on_err(msg=str(error)):
-                    try:
-                        if hasattr(self, "update_notice") and self.update_notice.winfo_exists():
-                            self.update_notice.configure(text=f"❌ Update failed: {msg}", text_color="#f87171")
-                        if hasattr(self, "update_button") and self.update_button.winfo_exists():
-                            self.update_button.configure(state="normal", text="🔄 Retry Update")
-                    except Exception:
-                        pass
+                    self._hide_progress_banner()
+                    self._set_update_ui(
+                        text=f"❌ Update failed: {msg[:100]}",
+                        color="#f87171",
+                        btn_text="🔄 Retry Download",
+                    )
                 self.after(0, on_err)
 
         threading.Thread(target=work, daemon=True).start()
@@ -521,7 +722,7 @@ class ComputeTorrentSeeder(ctk.CTk):
         
         ctk.CTkLabel(connection_card, text="🌐 NETWORK CONFIGURATION", font=("Arial", 12, "bold"), text_color="#818cf8").pack(anchor="w", padx=16, pady=(14, 2))
         ctk.CTkLabel(connection_card,
-            text="Enter the Coordinator PC's private LAN address (e.g. ws://192.168.100.7:8001/ws/seeder). Do NOT use localhost from another PC.",
+            text="Paste the coordinator address from your operator. On the same LAN you can enter its private IP. Use localhost only when both apps run on this PC.",
             wraplength=760, justify="left", font=("Arial", 11), text_color="#94a3b8").pack(anchor="w", padx=16, pady=(0, 8))
         
         self.server_entry = ctk.CTkEntry(connection_card, height=38, corner_radius=8,
@@ -531,14 +732,14 @@ class ComputeTorrentSeeder(ctk.CTk):
         self.server_entry.pack(fill="x", padx=16, pady=(2, 10))
         self.server_entry.insert(0, self.orchestrator_url)
         
-        ctk.CTkLabel(connection_card, text="🔑 One-Time Provider Enrollment Code", font=("Arial", 11, "bold"), text_color="#cbd5e1").pack(anchor="w", padx=16)
+        self.enrollment_token = self.enrollment_token or DEFAULT_ENROLLMENT_TOKEN
+        ctk.CTkLabel(connection_card, text="Provider join code (first connection or credential recovery)", font=("Arial", 11, "bold"), text_color="#cbd5e1").pack(anchor="w", padx=16)
         self.enrollment_entry = ctk.CTkEntry(connection_card, height=38, corner_radius=8,
                                              fg_color="#090e1a", border_color="#334155",
-                                             show="•", font=("Arial", 12),
-                                             placeholder_text="Enter join code (default: local-volunteer-join)")
+                                             font=("Arial", 12),
+                                             placeholder_text=DEFAULT_ENROLLMENT_TOKEN)
         self.enrollment_entry.pack(fill="x", padx=16, pady=(2, 6))
-        if self.enrollment_token:
-            self.enrollment_entry.insert(0, self.enrollment_token)
+        self.enrollment_entry.insert(0, self.enrollment_token)
             
         # Limits and Sliders Grid
         limits = ctk.CTkFrame(connection_card, fg_color="transparent")
@@ -556,6 +757,7 @@ class ComputeTorrentSeeder(ctk.CTk):
         
         self.connection_error = ctk.CTkLabel(connection_card, text="", text_color="#f43f5e", font=("Arial", 11, "bold"))
         self.connection_error.pack(anchor="w", padx=16)
+        self.connection_error.configure(text=self.connection_note)
         
         # Petals Layer Toggle Card
         petals_box = ctk.CTkFrame(connection_card, fg_color="#131b2e", border_width=1, border_color="#20304f", corner_radius=12)
@@ -592,7 +794,7 @@ class ComputeTorrentSeeder(ctk.CTk):
                          font=("Arial", 12, "bold"), text_color="#fca5a5").pack(padx=12, pady=10)
         
         # Connect Button (Electric Gradient Styling)
-        connect_btn = ctk.CTkButton(frame, text="🚀 Connect & Join Compute Network",
+        connect_btn = ctk.CTkButton(frame, text="Connect",
                                     command=self.start_connection,
                                     height=52, corner_radius=12,
                                     font=("Arial", 15, "bold"),
@@ -630,7 +832,7 @@ class ComputeTorrentSeeder(ctk.CTk):
         """Re-detect system devices before enrollment."""
         saved = {
             "orchestrator_url": self.server_entry.get() if hasattr(self, "server_entry") else self.orchestrator_url,
-            "enrollment_token": self.enrollment_entry.get() if hasattr(self, "enrollment_entry") else "",
+            "enrollment_token": (self.enrollment_entry.get().strip() if hasattr(self, "enrollment_entry") else "") or self.enrollment_token or DEFAULT_ENROLLMENT_TOKEN,
             "cpu_limit": self.cpu_entry.get() if hasattr(self, "cpu_entry") else str(self.cpu_limit),
             "memory_limit_gb": self.memory_entry.get() if hasattr(self, "memory_entry") else str(self.memory_limit_gb),
         }
@@ -649,72 +851,148 @@ class ComputeTorrentSeeder(ctk.CTk):
     
     def start_connection(self):
         """Start connection to orchestrator"""
-        self.petals_enabled = bool(self.layer_switch.get())
-        self.profile.update(provider_identity(), petals_enabled=self.petals_enabled, petals_protocol_version=1,
-                            cpu_limit=self.cpu_limit, memory_limit_gb=self.memory_limit_gb)
-        self.orchestrator_url = self.server_entry.get().strip()
-        self.enrollment_token = self.enrollment_entry.get().strip()
-        parsed = urlsplit(self.orchestrator_url)
-        if parsed.scheme not in {"ws", "wss"} or not parsed.netloc or not parsed.path.endswith("/ws/seeder"):
-            self.connection_error.configure(text="Enter a valid ws:// or wss:// coordinator URL ending in /ws/seeder")
+        if self.connection_thread is not None or self.shutting_down:
             return
-        if not self.access_token and not self.enrollment_token:
-            self.connection_error.configure(text="An enrollment code is required for this computer's first connection")
+        try:
+            target = normalize_coordinator_address(self.server_entry.get())
+            endpoint = coordinator_endpoint(target)
+        except ValueError as error:
+            self.connection_error.configure(text=str(error))
             return
+        entered_code = self.enrollment_entry.get().strip() if hasattr(self, "enrollment_entry") else ""
+        self.enrollment_token = entered_code or self.enrollment_token or DEFAULT_ENROLLMENT_TOKEN
+        try:
+            same_coordinator = endpoint == coordinator_endpoint(self.orchestrator_url)
+        except ValueError:
+            same_coordinator = False
+        if (not self.node_id or not self.access_token or not same_coordinator) and not self.enrollment_token:
+            self.enrollment_token = DEFAULT_ENROLLMENT_TOKEN
         try:
             self.cpu_limit = min(max(int(self.cpu_entry.get()), 1), max(1, self.profile["cpu_cores"]))
             self.memory_limit_gb = min(max(int(self.memory_entry.get()), 2), max(2, self.profile["RAM"]))
         except ValueError:
             self.connection_error.configure(text="CPU and RAM limits must be whole numbers")
             return
+        if not same_coordinator:
+            self.access_token = None
+            self.node_id = None
+        self.petals_enabled = bool(self.layer_switch.get())
+        self.profile.update(provider_identity(), petals_enabled=self.petals_enabled, petals_protocol_version=1,
+                            cpu_limit=self.cpu_limit, memory_limit_gb=self.memory_limit_gb)
+        self.orchestrator_url = target
         self.settings.update({"orchestrator_url": self.orchestrator_url,
                               "cpu_limit": self.cpu_limit, "memory_limit_gb": self.memory_limit_gb})
         self.save_settings()
+        self.disconnect_requested.clear()
+        self.connection_state = "Connecting"
+        self.connection_note = ""
         self.show_dashboard()
-        thread = threading.Thread(target=self.run_websocket, daemon=True)
-        thread.start()
+        self.connection_thread = threading.Thread(target=self.run_websocket, daemon=True)
+        self.connection_thread.start()
 
     def save_settings(self):
-        self.settings.update({"node_id": self.node_id, "access_token": self.access_token,
-                              "petals_enabled": self.petals_enabled,
-                              "orchestrator_url": self.orchestrator_url,
-                              "cpu_limit": self.cpu_limit, "memory_limit_gb": self.memory_limit_gb,
-                              "recent_work": self.recent_work[-20:]})
-        self.settings.pop("enrollment_token", None)
-        temporary = self.settings_path.with_suffix(".tmp")
-        temporary.write_text(json.dumps(self.settings, indent=2), encoding="utf-8")
-        temporary.replace(self.settings_path)
+        with self.settings_lock:
+            self.settings.update({"node_id": self.node_id, "access_token": self.access_token,
+                                  "petals_enabled": self.petals_enabled,
+                                  "orchestrator_url": self.orchestrator_url,
+                                  "cpu_limit": self.cpu_limit, "memory_limit_gb": self.memory_limit_gb,
+                                  "recent_work": self.recent_work[-20:]})
+            self.settings.pop("enrollment_token", None)
+            temporary = self.settings_path.with_suffix(".tmp")
+            temporary.write_text(json.dumps(self.settings, indent=2), encoding="utf-8")
+            temporary.replace(self.settings_path)
 
     def enroll_provider(self):
         parsed = urlsplit(self.orchestrator_url)
         scheme = "https" if parsed.scheme == "wss" else "http"
         enrollment_url = urlunsplit((scheme, parsed.netloc, "/api/seeders/enroll", "", ""))
         payload = json.dumps({"tier": self.profile["tier"], "profile": self.profile}).encode("utf-8")
-        token_to_send = self.enrollment_token.strip() if self.enrollment_token else "local-volunteer-join"
+        token_to_send = (self.enrollment_token.strip() if self.enrollment_token else "") or DEFAULT_ENROLLMENT_TOKEN
+        if not token_to_send:
+            token_to_send = DEFAULT_ENROLLMENT_TOKEN
         request = urllib.request.Request(enrollment_url, data=payload, method="POST", headers={
             "Content-Type": "application/json",
             "X-Enrollment-Token": token_to_send,
             "ngrok-skip-browser-warning": "69420",
             "User-Agent": "ComputeTorrent-Provider/1.0"
         })
-        try:
-            with urllib.request.urlopen(request, timeout=30) as response:
-                enrollment = json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as error:
-            detail = error.read().decode("utf-8", errors="replace")[-300:]
-            raise RuntimeError(f"Provider enrollment failed ({error.code}): {detail}") from error
-        self.node_id = enrollment["node_id"]
-        self.access_token = enrollment["access_token"]
-        self.enrollment_token = ""
-        self.save_settings()
-    
+        with urllib.request.build_opener(EnrollmentNoRedirect()).open(request, timeout=15) as response:
+            enrollment = json.loads(response.read(65536))
+        if not isinstance(enrollment, dict) or not all(
+            isinstance(enrollment.get(key), str) and enrollment[key] for key in ("node_id", "access_token")
+        ):
+            raise ValueError("Invalid enrollment response")
+        return enrollment
+
     def run_websocket(self):
-        """Run WebSocket connection"""
-        self.start_libp2p_peer()
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        self.event_loop = loop
-        loop.run_until_complete(self.connect_to_orchestrator())
+        async def run():
+            self.event_loop = asyncio.get_running_loop()
+            self.connection_task = asyncio.current_task()
+            if not self.disconnect_requested.is_set():
+                await self.connect_to_orchestrator()
+        try:
+            asyncio.run(run())
+        except asyncio.CancelledError:
+            pass
+        finally:
+            self.websocket = None
+            self.is_connected = False
+            self.event_loop = self.connection_task = None
+            try:
+                self.stop_connection_resources()
+            finally:
+                self.after(0, self.connection_finished)
+
+    def stop_connection_resources(self):
+        try:
+            self.petals.stop()
+        finally:
+            process, self.libp2p_process = self.libp2p_process, None
+            try:
+                if process and process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait(timeout=5)
+            finally:
+                if self.libp2p_log:
+                    self.libp2p_log.close()
+                    self.libp2p_log = None
+
+    def connection_finished(self):
+        self.connection_thread = None
+        self.current_task = None
+        if self.shutting_down:
+            self.destroy()
+            return
+        self.connection_state = "Disconnected"
+        if self.disconnect_requested.is_set():
+            self.connection_note = "Disconnected. You can connect again when ready."
+        self.show_onboarding()
+
+    def disconnect_provider(self):
+        if self.connection_thread is None or self.disconnect_requested.is_set():
+            return
+
+        def cancel_if_idle():
+            if self.current_task and not self.shutting_down:
+                self.update_status("Finish the current task before disconnecting.")
+                return
+            self.disconnect_requested.set()
+            self.set_connection_state("Disconnecting", "Closing this connection.")
+            if self.connection_task is not None:
+                self.connection_task.cancel()
+
+        loop = self.event_loop
+        if loop is not None:
+            try:
+                loop.call_soon_threadsafe(cancel_if_idle)
+            except RuntimeError:
+                pass
+        else:
+            cancel_if_idle()
 
     def start_libp2p_peer(self):
         """Join the optional LAN discovery/relay overlay (not the file data plane)."""
@@ -740,54 +1018,67 @@ class ComputeTorrentSeeder(ctk.CTk):
                 raise RuntimeError("Coordinator did not provide a valid libp2p relay address")
             if not self.libp2p_helper.is_file():
                 raise FileNotFoundError(f"libp2p helper is missing: {self.libp2p_helper}")
-            self.libp2p_log = (self.app_data / "libp2p.log").open("a", encoding="utf-8")
+            log_path = self.app_data / "libp2p.log"
+            if self.libp2p_log:
+                self.libp2p_log.close()
+            self.libp2p_log = log_path.open("a", encoding="utf-8")
+            offset = log_path.stat().st_size
             self.libp2p_process = subprocess.Popen(
                 [self.node_binary, str(self.libp2p_helper), "join", bootstrap_address],
                 cwd=str(self.libp2p_helper.parent), stdin=subprocess.DEVNULL,
                 stdout=self.libp2p_log, stderr=self.libp2p_log,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             self.update_status("Joining libp2p LAN discovery and relay overlay…")
-            time.sleep(1.0)
-            if self.libp2p_process.poll() is not None:
-                raise RuntimeError("libp2p peer exited during startup; see %LOCALAPPDATA%\\ComputeTorrent\\libp2p.log")
-            self.update_status("LAN peer overlay connected; files still transfer over WebTorrent")
+            deadline = time.monotonic() + 8
+            with log_path.open("rb") as output:
+                output.seek(offset)
+                while time.monotonic() < deadline and not self.shutting_down:
+                    if self.libp2p_process.poll() is not None:
+                        raise RuntimeError("libp2p helper exited; see libp2p.log")
+                    line = output.readline()
+                    if line and b'"type":"libp2p_joined"' in line:
+                        self.update_status("Connected")
+                        return
+                    time.sleep(0.1)
+            if self.libp2p_process.poll() is None:
+                self.libp2p_process.terminate()
+            raise RuntimeError("libp2p helper did not confirm bootstrap")
         except Exception as error:
-            self.update_status(f"LAN peer overlay unavailable ({error}); WebTorrent transfer remains active")
+            if not self.is_connected:
+                self.update_status(f"Discovery overlay unavailable ({error})")
 
     def close_application(self):
-        """Stop the background peer before closing the desktop app."""
         if self.shutting_down:
             return
+        if self.current_task:
+            self.update_status("Finish or cancel the active task before quitting.")
+            return
         self.shutting_down = True
-        self.petals.stop()
-        if self.websocket and self.event_loop and self.event_loop.is_running():
-            try:
-                close_future = asyncio.run_coroutine_threadsafe(self.websocket.close(), self.event_loop)
-                close_future.result(timeout=3)
-            except Exception:
-                pass
-        if self.libp2p_process and self.libp2p_process.poll() is None:
-            self.libp2p_process.terminate()
-            try:
-                self.libp2p_process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self.libp2p_process.kill()
-        if self.libp2p_log:
-            self.libp2p_log.close()
-        try:
+        if self.connection_thread is not None:
+            self.connection_state = "Disconnecting"
+            self.connection_note = "Closing the connection and releasing local resources."
+            self.render_connection_state()
+            self.disconnect_provider()
+        else:
             self.destroy()
-        except Exception:
-            pass
-    
+
     async def connect_to_orchestrator(self):
         """Connect to orchestrator via WebSocket"""
         retry_count = 0
-        while not self.shutting_down:
+        overlay_task = None
+        while not self.shutting_down and not self.disconnect_requested.is_set():
             try:
-                self.update_status(f"Connecting to {self.orchestrator_url}...")
-                if not self.access_token:
-                    self.update_status("Enrolling this computer with the network...")
-                    await asyncio.to_thread(self.enroll_provider)
+                coordinator_endpoint(self.orchestrator_url)
+                self.set_connection_state("Connecting", "Contacting the coordinator.")
+                if not self.node_id or not self.access_token:
+                    self.set_connection_state("Enrolling", "Requesting a provider credential.")
+                    enrollment = await asyncio.to_thread(self.enroll_provider)
+                    if self.disconnect_requested.is_set():
+                        return
+                    self.node_id = enrollment["node_id"]
+                    self.access_token = enrollment["access_token"]
+                    self.enrollment_token = ""
+                    self.save_settings()
 
                 headers = {
                     "Authorization": f"Bearer {self.access_token}",
@@ -801,20 +1092,9 @@ class ComputeTorrentSeeder(ctk.CTk):
                     "close_timeout": 15,
                     "max_size": 100 * 1024 * 1024,
                 }
-                import inspect
-                if "additional_headers" in inspect.signature(websockets.connect).parameters:
-                    connect_kwargs["additional_headers"] = headers
-                else:
-                    connect_kwargs["extra_headers"] = headers
-
-                async with websockets.connect(
-                    self.orchestrator_url,
-                    **connect_kwargs
+                async with CoordinatorConnect(
+                    self.orchestrator_url, extra_headers=headers, **connect_kwargs
                 ) as websocket:
-                    self.websocket = websocket
-                    self.is_connected = True
-                    retry_count = 0
-                    
                     # Send registration
                     register_msg = {
                         "type": "register",
@@ -833,50 +1113,64 @@ class ComputeTorrentSeeder(ctk.CTk):
                     }
                     
                     await websocket.send(json.dumps(register_msg))
-                    self.update_status("✅ Connected & Registered!")
+                    self.set_connection_state("Registering", "Waiting for coordinator confirmation.")
+                    first = await asyncio.wait_for(websocket.recv(), timeout=15)
+                    ack = json.loads(first)
+                    if (not isinstance(ack, dict) or ack.get("type") != "register_ack"
+                            or ack.get("node_id") != self.node_id):
+                        raise ValueError("Coordinator did not acknowledge this provider identity")
+                    self.websocket = websocket
+                    self.is_connected = True
+                    retry_count = 0
+                    self.set_connection_state("Registered", "The coordinator confirmed this provider.")
+                    await self.handle_message(first)
+                    if overlay_task is None or overlay_task.done():
+                        overlay_task = asyncio.create_task(asyncio.to_thread(self.start_libp2p_peer))
                     
                     # Start heartbeat
                     heartbeat_task = asyncio.create_task(self.send_heartbeats(websocket))
+                    close_watch = asyncio.create_task(self.watch_control_close(websocket))
                     
                     # Message loop
                     try:
                         async for message in websocket:
                             await self.handle_message(message)
-                    except websockets.exceptions.ConnectionClosed as close_err:
-                        if getattr(close_err, "code", None) == 1008:
-                            self.update_status("⚠️ Invalid credential. Re-enrolling...")
-                            self.access_token = None
-                            self.node_id = None
-                        else:
-                            self.update_status("🔄 Reconnecting...")
                     finally:
-                        heartbeat_task.cancel()
                         self.websocket = None
                         self.is_connected = False
+                        if not self.disconnect_requested.is_set() and not self.shutting_down:
+                            self.set_connection_state("Reconnecting", "The coordinator connection closed.")
+                        heartbeat_task.cancel()
+                        close_watch.cancel()
+                        await asyncio.gather(heartbeat_task, close_watch, return_exceptions=True)
                         
-            except Exception as e:
-                if self.shutting_down:
-                    break
-                err_msg = str(e)
-                if "401" in err_msg or "enrollment failed" in err_msg.lower():
-                    self.update_status("❌ Invalid join code. Verify the enrollment code.")
-                    await asyncio.sleep(4)
-                elif "1225" in err_msg or "10061" in err_msg or "ConnectionRefused" in err_msg:
-                    self.update_status(f"❌ Cannot reach {self.orchestrator_url}")
-                    await asyncio.sleep(3)
-                elif "TypeError" in err_msg:
-                    self.update_status(f"❌ Client error: {err_msg[:60]}")
-                    await asyncio.sleep(3)
+            except websockets.exceptions.ConnectionClosed as error:
+                if error.rcvd is not None and error.rcvd.code == 1008:
+                    self.access_token = None
+                    self.node_id = None
+                    self.enrollment_token = self.enrollment_token or DEFAULT_ENROLLMENT_TOKEN
+                    self.connection_note = "Credentials refreshed. Re-enrolling with coordinator..."
                 else:
-                    self.update_status(f"⚠️ {err_msg[:60]}")
-                    await asyncio.sleep(2)
-            retry_count += 1
-            delay = min(10, 1 + retry_count)
-            if self.shutting_down:
+                    self.connection_note = "Coordinator connection closed."
+            except Exception as error:
+                self.connection_note, retryable = connection_failure(error)
+                if not retryable:
+                    return
+            if self.shutting_down or self.disconnect_requested.is_set():
                 break
-            self.update_status(f"Reconnecting in {delay}s…")
+            retry_count += 1
+            delay = random.uniform(0.5, 1.0) * min(30, 2 ** min(retry_count, 5))
+            self.set_connection_state("Reconnecting", f"{self.connection_note} Retry in {delay:.1f}s.")
             await asyncio.sleep(delay)
-    
+
+    async def watch_control_close(self, websocket):
+        # A task handler may still be awaiting local work when the socket closes.
+        await websocket.wait_closed()
+        if self.websocket is websocket:
+            self.is_connected = False
+            if not self.disconnect_requested.is_set() and not self.shutting_down:
+                self.set_connection_state("Reconnecting", "The coordinator connection closed.")
+
     async def send_heartbeats(self, websocket):
         """Send periodic heartbeats with failure tolerance"""
         while not self.shutting_down and self.websocket == websocket:
@@ -910,7 +1204,7 @@ class ComputeTorrentSeeder(ctk.CTk):
             except Exception:
                 pass
 
-        self.profile["petals"] = await asyncio.to_thread(self.petals.status, self.is_connected and not self.paused)
+        self.profile["petals"] = await asyncio.to_thread(self.petals.status, self.is_connected)
         layer_active = self.profile["petals"].get("status") not in {"idle", "failed", "stopped", "cancelled"}
         if not layer_active and str(self.current_task or "").startswith("Petals:"):
             self.current_task = None
@@ -923,7 +1217,9 @@ class ComputeTorrentSeeder(ctk.CTk):
             "state": "paused" if self.paused else ("busy" if self.current_task or layer_active else "idle"),
             "profile": self.profile,
         }))
-    
+        if not self.shutting_down:
+            self.after(0, self.render_resources)
+
     async def handle_message(self, message):
         """Handle incoming messages"""
         try:
@@ -935,7 +1231,7 @@ class ComputeTorrentSeeder(ctk.CTk):
                 self.credits_earned = float(data.get("credits_earned", self.credits_earned))
                 self.update_tasks_count(self.tasks_completed)
                 self.update_credits(self.credits_earned)
-                self.update_status("✅ Registration confirmed!")
+                self.update_status("Connected")
             
             elif msg_type == "petals_start":
                 if self.paused or not self.petals_enabled or self.current_task:
@@ -971,7 +1267,7 @@ class ComputeTorrentSeeder(ctk.CTk):
                 self.profile['petals'] = self.petals.status(renew=False)
                 self.current_task = None
                 self.update_task_info("✅ Layer serving completed · Ready for next task")
-                self.update_status("Online & ready for tasks")
+                self.update_status("Connected")
                 if hasattr(self, 'layer_label'):
                     self.after(0, lambda: self.layer_label.configure(text="Layer sharing enabled · waiting for assignment", text_color="#7ce4bc"))
             elif msg_type == "task_assign":
@@ -1095,10 +1391,17 @@ class ComputeTorrentSeeder(ctk.CTk):
         
         ctk.CTkLabel(title_box, text="⚡ ComputeTorrent Provider Node",
                      font=("Arial", 20, "bold"), text_color="#ffffff").pack(anchor="w")
-        ctk.CTkLabel(title_box, text=f"Node ID: {self.node_id or 'Enrolling…'} · Coordinator: {self.orchestrator_url}",
-                     font=("Courier New", 11), text_color="#64748b").pack(anchor="w", pady=(2, 0))
+        self.node_label = ctk.CTkLabel(title_box, text="", font=("Courier New", 11), text_color="#94a3b8")
+        self.node_label.pack(anchor="w", pady=(2, 0))
+        self.connection_badge = ctk.CTkLabel(title_box, text="", font=("Arial", 13, "bold"))
+        self.connection_badge.pack(anchor="w", pady=(4, 0))
+        self.connection_detail = ctk.CTkLabel(top_banner, text="", wraplength=650, justify="left")
+        self.connection_detail.pack(anchor="w", padx=16, pady=(0, 8))
+        ctk.CTkButton(header_row, text="Disconnect", width=105, command=self.disconnect_provider
+                      ).pack(side="right", padx=(8, 0))
+        self.render_connection_state()
                      
-        self.status_label = ctk.CTkLabel(header_row, text="Status: Initializing…",
+        self.status_label = ctk.CTkLabel(header_row, text="Activity: Waiting",
                                          font=("Arial", 13, "bold"), text_color="#38bdf8",
                                          fg_color="#0c192d", corner_radius=20, padx=14, pady=6)
         self.status_label.pack(side="right")
@@ -1114,16 +1417,16 @@ class ComputeTorrentSeeder(ctk.CTk):
         ctk.CTkLabel(c1, text="💻 PROCESSOR", font=("Arial", 10, "bold"), text_color="#38bdf8").pack(anchor="w", padx=10, pady=(8, 2))
         cpu_text = self.profile.get('cpu_model') or f"{self.profile['cpu_cores']} Cores"
         ctk.CTkLabel(c1, text=cpu_text[:20], font=("Arial", 12, "bold"), text_color="#f8fafc").pack(anchor="w", padx=10)
-        ctk.CTkLabel(c1, text=f"{self.profile['cpu_cores']} Cores · {self.profile.get('cpu_load_pct', 0)}% Load",
-                     font=("Arial", 11), text_color="#94a3b8").pack(anchor="w", padx=10, pady=(2, 8))
+        self.cpu_detail = ctk.CTkLabel(c1, text="", font=("Arial", 11), text_color="#94a3b8")
+        self.cpu_detail.pack(anchor="w", padx=10, pady=(2, 8))
         
         # RAM Card
         c2 = ctk.CTkFrame(hw_grid, fg_color="#102322", border_width=1, border_color="#1b453e", corner_radius=12)
         c2.grid(row=0, column=1, padx=4, pady=4, sticky="nsew")
         ctk.CTkLabel(c2, text="🧠 MEMORY (RAM)", font=("Arial", 10, "bold"), text_color="#34d399").pack(anchor="w", padx=10, pady=(8, 2))
         ctk.CTkLabel(c2, text=f"{self.profile['RAM']} GB Installed", font=("Arial", 12, "bold"), text_color="#f8fafc").pack(anchor="w", padx=10)
-        ctk.CTkLabel(c2, text=f"{self.profile.get('free_ram_gb', 0)} GB Free · Max {self.memory_limit_gb} GB",
-                     font=("Arial", 11), text_color="#94a3b8").pack(anchor="w", padx=10, pady=(2, 8))
+        self.memory_detail = ctk.CTkLabel(c2, text="", font=("Arial", 11), text_color="#94a3b8")
+        self.memory_detail.pack(anchor="w", padx=10, pady=(2, 8))
                      
         # GPU Card
         c3 = ctk.CTkFrame(hw_grid, fg_color="#1e162f", border_width=1, border_color="#3b275e", corner_radius=12)
@@ -1131,17 +1434,18 @@ class ComputeTorrentSeeder(ctk.CTk):
         ctk.CTkLabel(c3, text="🎮 ACCELERATION", font=("Arial", 10, "bold"), text_color="#a78bfa").pack(anchor="w", padx=10, pady=(8, 2))
         gpu_short = (self.profile['GPU'] or "CPU Only")[:20]
         ctk.CTkLabel(c3, text=gpu_short, font=("Arial", 12, "bold"), text_color="#f8fafc").pack(anchor="w", padx=10)
-        vram_info = f"{self.profile['VRAM'] / 1024:.1f} GB VRAM" if self.profile['VRAM'] else "System Shared"
-        ctk.CTkLabel(c3, text=f"{vram_info} · Tier {self.profile['tier']}",
-                     font=("Arial", 11), text_color="#94a3b8").pack(anchor="w", padx=10, pady=(2, 8))
+        self.gpu_detail = ctk.CTkLabel(c3, text="", font=("Arial", 11), text_color="#94a3b8")
+        self.gpu_detail.pack(anchor="w", padx=10, pady=(2, 8))
                      
         # Sandbox Card
         c4 = ctk.CTkFrame(hw_grid, fg_color="#241b12", border_width=1, border_color="#4d351b", corner_radius=12)
         c4.grid(row=0, column=3, padx=4, pady=4, sticky="nsew")
         ctk.CTkLabel(c4, text="🐳 RUNTIME", font=("Arial", 10, "bold"), text_color="#fbbf24").pack(anchor="w", padx=10, pady=(8, 2))
-        ctk.CTkLabel(c4, text="Docker Isolated", font=("Arial", 12, "bold"), text_color="#f8fafc").pack(anchor="w", padx=10)
-        ctk.CTkLabel(c4, text="Petals Protocol v1",
+        self.docker_detail = ctk.CTkLabel(c4, text="", font=("Arial", 12, "bold"), text_color="#f8fafc")
+        self.docker_detail.pack(anchor="w", padx=10)
+        ctk.CTkLabel(c4, text="Separate from connection status",
                      font=("Arial", 11), text_color="#94a3b8").pack(anchor="w", padx=10, pady=(2, 8))
+        self.render_resources()
 
         # 3. Active Task Highlight Card (Glowing Cyan / Electric Border)
         task_card = ctk.CTkFrame(frame, fg_color="#0c192d", border_width=2, border_color="#0ea5e9", corner_radius=14)
@@ -1208,7 +1512,7 @@ class ComputeTorrentSeeder(ctk.CTk):
                                     command=lambda: self.clipboard_clear() or self.clipboard_append(self.node_id or ''))
         copy_id_btn.pack(side="left", padx=8)
 
-        quit_btn = ctk.CTkButton(btn_bar, text="🚪 Disconnect & Quit",
+        quit_btn = ctk.CTkButton(btn_bar, text="Quit provider",
                                  width=160, height=40, corner_radius=10,
                                  font=("Arial", 12, "bold"),
                                  fg_color="#e11d48", hover_color="#be123c",
@@ -1217,18 +1521,47 @@ class ComputeTorrentSeeder(ctk.CTk):
 
     def toggle_pause(self):
         self.paused = not self.paused
-        if self.paused:
-            self.petals.stop()
         self.pause_btn.configure(text="▶️ Resume contributions" if self.paused else "⏸️ Pause contributions")
         self.update_status("Paused; current task will finish" if self.paused and self.current_task else
                            ("Paused; not accepting tasks" if self.paused else "Resuming network contributions"))
         if self.websocket and self.event_loop and self.event_loop.is_running():
-            asyncio.run_coroutine_threadsafe(self.send_heartbeat_once(self.websocket), self.event_loop)
+            asyncio.run_coroutine_threadsafe(websocket_profile(self), self.event_loop)
     
+    def set_connection_state(self, state, detail):
+        self.connection_state = state
+        self.connection_note = detail
+        if not self.shutting_down:
+            self.after(0, self.render_connection_state)
+
+    def render_connection_state(self):
+        if not hasattr(self, "connection_badge") or not self.connection_badge.winfo_exists():
+            return
+        registered = self.connection_state == "Registered" and self.is_connected
+        state = "Registered" if registered else (
+            "Reconnecting" if self.connection_state == "Registered" else self.connection_state
+        )
+        self.connection_badge.configure(text=state, text_color="#86efac" if registered else "#fbbf24")
+        self.connection_detail.configure(text=self.connection_note)
+        node = self.node_id if registered else "Awaiting confirmation"
+        self.node_label.configure(text=f"Node: {node}")
+
+    def render_resources(self):
+        if not hasattr(self, "cpu_detail") or not self.cpu_detail.winfo_exists():
+            return
+        self.cpu_detail.configure(text=f"{self.profile.get('cpu_cores', '—')} cores · Sharing up to {self.cpu_limit}")
+        self.memory_detail.configure(text=f"{self.profile.get('free_ram_gb', '—')} GB free · Limit {self.memory_limit_gb} GB")
+        vram = self.profile.get("VRAM")
+        gpu_memory = f"{vram / 1024:.1f} GB dedicated VRAM" if vram else "No dedicated VRAM reported"
+        self.gpu_detail.configure(text=gpu_memory)
+        self.docker_detail.configure(text="Docker available" if self.profile.get("docker_ok") else "Docker unavailable")
+
     def update_status(self, text):
         if hasattr(self, 'status_label') and not self.shutting_down:
             try:
-                self.after(0, lambda: self.status_label.configure(text=f"Status: {text}") if not self.shutting_down else None)
+                clean = str(text).strip()
+                display_text = "Connected" if clean.lower() == "connected" else (clean if clean.lower().startswith("activity:") else f"Activity: {clean}")
+                self.after(0, lambda: self.status_label.configure(text=display_text)
+                           if not self.shutting_down and self.status_label.winfo_exists() else None)
             except RuntimeError:
                 pass
     

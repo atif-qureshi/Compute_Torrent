@@ -1,0 +1,66 @@
+# Emergency provider update audit
+
+## Containment and evidence
+
+Phase 1 is paused. The Docker Engine was reachable in a read-only check and all five canonical ComputeTorrent containers reported exited. A direct loopback request to the legacy manifest returned no HTTP response. This does not establish the state of any remote ngrok endpoint, another installation or a previously distributed executable. No service was started, rebuilt, deployed or published during containment.
+
+Existing files and logs were left in place. Read-only fingerprints recorded before source changes:
+
+| Evidence | Bytes | SHA-256 |
+| --- | ---: | --- |
+| runtime/provider-updates/ComputeTorrent_Seeder.exe | 176340670 | 6ddcdf12a2cb55fc7625467d5306ddf5ff234c03572c80dc76face6a56977996 |
+| runtime/provider-updates/manifest.json | 228 | 9239bf15ba736a6c9ee29c4026d63625badf20a66c7e139648fdf0461ff990a7 |
+
+The local manifest size and digest matched the EXE when checked earlier in this session. The manifest version differed from the source and installed-setup artifact metadata. The only local provider log identified was libp2p.log, a network helper log rather than an update audit trail. The updater had no structured install audit trail. These observations do not establish provenance, execution, or exploitation. Existing executable files were not run. This was a source and local evidence review, not host forensics.
+
+## Findings and root causes
+
+| Affected path | Root cause |
+| --- | --- |
+| Coordinator legacy feed and portal proxy | Manifest and binary routes were exempt from coordinator API authentication. The browser proxy streamed the raw EXE without a portal session check. A readable feed is acceptable only if artifact authenticity is verified independently. |
+| Canonical and legacy desktop updater | Feed origin came from coordinator settings, including HTTP. HTTPS explicitly disabled both certificate and hostname checks. The server supplied an unsigned SHA-256 and the binary, allowing substitution of both on an untrusted path. |
+| Installer and local state | Staging used predictable filenames, and the PowerShell helper copied over the running EXE and started it. Source launches could fall back to running the staged EXE directly. Same-version reinstallation, lexical ordering, missing release freshness, and no rollback or completion check weakened recovery. |
+| Build and publication | The build copied an EXE and then replaced a manifest in the live serving directory. Build access implicitly granted publication, and the separate writes allowed mixed generations. No signed authorization or channel separation existed. |
+
+## Replacement trust model
+
+Legacy coordinator endpoints and the portal proxy return HTTP 410 when the patched services are deployed. The portal directs operators to an approved installer. Builds produce local artifacts and no longer write the old feed. The new updater uses a build-pinned HTTPS base, embedded Ed25519 public key, and a build-selected stable or testing channel. Coordinator settings cannot supply a release origin. HTTPS uses the OS/Python trust store, hostname checking and no redirects. An unprovisioned build fails closed.
+
+The signature covers canonical JSON metadata, including schema, Windows x64 platform, channel, filename, numeric build identity, minimum client version, monotonic sequence, issuance/expiry, size and SHA-256. Manifests have a seven-day maximum lifetime. The client records the highest attempted sequence per channel in local SQLite, permits retry of the identical signed release and rejects older or conflicting metadata. The installed version must be lower than the target. Payloads come from a digest-addressed path and are streamed into an exclusive file under a fresh user-local staging directory. The client removes failed staging directories and revalidates metadata and the file digest immediately before handing the verified installer to Windows.
+
+The update button launches the verified per-user Inno wizard. The wizard handles installation and offers post-install launch. Settings and model caches are separate from the application install directory. This removes the custom PowerShell replacement and source-mode executable launch. Full rollback after a failed installation or bad application launch has not been demonstrated. Keep an approved recovery installer available and test Windows interruption, application exit and restart before enabling delivery. Successfully staged installers remain in local staging after handoff. Same-user filesystem compromise, clock manipulation, deletion of local replay state, concurrent install attempts and key compromise are outside the tested guarantees.
+
+TUF is a candidate before wider deployment because it adds role separation, threshold keys, rotation and richer replay/freeze protection. This MVP uses one pinned signing key per build configuration. Authenticode is recommended as an additional Windows publisher identity and installer verification layer. It requires an approved code-signing certificate and signing service and is not a substitute for signed metadata.
+
+## Changed sources and validation
+
+- Coordinator and portal legacy route containment in orchestrator/app/main_production.py and 01-submitter-portal/pages/api/download-provider.ts. The workspace download card was adjusted in pages/index.tsx.
+- Canonical and legacy provider_update.py, production_seeder.py and requirements.txt implement the client. The canonical build_installer.ps1 stops implicit publication. sign_provider_release.py prepares an envelope offline.
+- test_secure_provider_update.py exercises unsigned, forged and altered manifests, expiry, replay, incompatible releases, foreign or HTTP feeds, TLS policy and simulated certificate rejection, corrupted/truncated/interrupted downloads, and verified handoff with unchanged mock settings. Process launch is mocked. No test executable was run or distributed.
+- Existing provider and Petals regressions passed. No real TLS deployment, Windows install/rollback, signing host ACLs, or volunteer migration has been certified.
+
+## Signing and migration gates
+
+1. Obtain explicit approval for changes to any active infrastructure. First deploy the retirement routes or block the old feed at the approved ingress. Inventory old clients and direct operators to stop using their update button. Source changes do not patch distributed clients.
+2. On an authorized release machine, provision an encrypted Ed25519 signing key outside the repository and serving tree. Restrict it to authorized signers and back it up under controlled access. Provision separate stable/testing keys and builds. Only the public key, channel, and approved HTTPS feed base go into provider_update.py before packaging. Keep the legacy desktop copy aligned.
+3. Build and verify a new version with the existing Inno workflow. Optionally Authenticode-sign the final installer before generating metadata. Use sign_provider_release.py with the encrypted PEM, approved installer, version, minimum version, channel, next sequence, and a new manifest output path. The tool prompts for the key password and cannot publish. Track issued sequence numbers independently of builds. A renewed manifest needs a fresh sequence.
+4. On the separately authorized HTTPS release host, use a dedicated authenticated publisher with restricted write permissions and a read-only serving identity. Upload the payload to channel/sha256/ComputeTorrent-Provider-Setup.exe first, then atomically promote channel/manifest.json. The coordinator's old directory is not the new feed.
+5. Bootstrap existing volunteers with a new installer obtained through an independently authenticated channel. Verify its approved digest or publisher identity outside the legacy updater. Before rollout, use isolated Windows machines for clean installation, valid update, corrupt and interrupted transfer, invalid TLS, restart and recovery, and settings persistence. Validate host publication permissions with both authorized and unauthorized identities. Keep the service and production keys unprovisioned until approved.
+
+## Phase 0.5 validation and migration findings
+
+- **Legacy scope.** Treat every distributed build with the coordinator-derived unsigned update feed as affected. The update1 and update2 packages from the earlier rollout use that path. Source history at `85ef93c` identifies update2 with unsigned metadata and HTTP support. The later source at `0f0d02d`, associated with update3, also disables TLS verification. The version string cannot certify a safe build. The inspected setup still reports `2026.11.01-update2` and Authenticode `NotSigned`. Its SHA-256 is `c4b69e571c2b1db70ae9e0db1df0be310434cec8b53744a905df70e5c85d29d4`. Retain it as evidence rather than using it for migration.
+- **Exposure evidence.** All five local Compose containers are exited. No local ngrok process, responding inspector, or saved tunnel file was found. No verified external endpoint was available for a read-only probe. Remote exposure remains unknown. Retained coordinator logs contain 53 successful legacy manifest responses and 15 successful legacy download responses. A logged HTTP 200 does not prove transfer completion, volunteer identity, or execution. The local provider update directory also contains one EXE and one PowerShell file. Their provenance and execution were not established. No executable or helper was run.
+- **Verified client boundary.** Real loopback TLS rejected both an untrusted certificate and a trusted certificate with a mismatched hostname. An approved fixture certificate worked and an HTTPS-to-HTTP redirect was refused. The signer round trip used a disposable encrypted key and inert bytes. The signer rejects repository key paths. A reviewed build must still be produced and inspected to demonstrate that it embeds only a public key. No production key storage or ACL was available to validate.
+- **Replay and execution limits.** The SQLite high-water mark blocks older and conflicting sequences across separate connections while the database remains intact. It is recorded at staging or handoff, so a check may advertise a release that staging rejects. Restoring/deleting local state can defeat that history. Expiry depends on the host clock. The verified installer is opened by path after hashing, so a same-user process able to replace the staged file is outside the guarantee. The Inno recipe uses `ignoreversion`, making manual downgrade possible. A compromised embedded key cannot currently be remotely revoked by the client.
+- **Legacy reactivation.** In-process calls to both patched GET routes returned 410 and POST returned 405. No production publisher exists in the repository. The old feed mount remains in Compose and prior images/artifacts remain available. A stale image, restored routing rule, or legacy desktop binary can still expose or consume the old feed. Require an independent ingress deny rule for both legacy endpoints, an approved image digest, and a retirement probe after deployment and after rollback. Disable or retire any legacy origin discovered during inventory.
+
+## Migration procedure for approval
+
+1. Inventory volunteer builds by artifact digest and build source where available. Record the actual historic public hosts from operator-owned ngrok or reverse-proxy records. Check those hosts using a bounded metadata/status request and review restricted access logs for transfer evidence. Preserve existing artifacts and logs. Treat unknown clients with the legacy update UI as affected until verified.
+2. After approval, retire old feed routes at each reachable origin and ingress, then check from outside the coordinator LAN. Instruct legacy users to stop using the old update button through an independently authenticated operator channel. A newer manifest or an endpoint redirect cannot establish trust for those binaries.
+3. Prepare a distinct, strictly newer provider build with an embedded public key and pinned release host. Distribute its independently verified setup manually after approval. The first trusted setup establishes the public key. The old feed is excluded from bootstrap.
+4. In the same Windows user profile, close the old app. Back up `%LOCALAPPDATA%\ComputeTorrent` securely and preserve the per-user installation path. The settings file contains coordinator configuration, node ID and a bearer credential. Keep it private, and restore it only to the same user/device. Verify the same node reconnects and caches/settings remain intact. Re-enroll through the approved path if a credential is suspect or has been revoked.
+5. For routine rotation or signer compromise, stop publication and disable both channel manifests at the approved host. Keep legacy routes denied. Obtain approval for an independently authenticated replacement installer with a new public key. Disabling a feed cannot invalidate already obtained signed metadata, which remains usable within its validity window if other checks pass. A future key-role framework such as TUF should be evaluated before relying on unattended rotation or revocation.
+
+The [release readiness checklist](provider-release-readiness.md) records the remaining infrastructure and test gates.
