@@ -15,7 +15,7 @@ from urllib.parse import urlsplit
 CPU_IMAGE = "computetorrent-petals:local"
 CUDA_IMAGE = "computetorrent-petals:cuda-local"
 NETWORK_REVISION = 2
-PROVIDER_BUILD = "2026.11.06-update6"
+PROVIDER_BUILD = "2026.11.07-lan5"
 DIGEST_LABEL = "computetorrent.runtime.digest"
 RUNTIME_DIR = (Path(__file__).resolve().parents[1] / "06-petals-runtime" if not getattr(sys, "frozen", False)
                else Path(sys._MEIPASS) / "petals-runtime")
@@ -25,7 +25,8 @@ if not RUNTIME_DIR.is_dir() and not getattr(sys, "frozen", False):
 
 
 def provider_identity():
-    return {"petals_network_revision": NETWORK_REVISION, "petals_provider_build": PROVIDER_BUILD}
+    return {"petals_network_revision": NETWORK_REVISION, "petals_provider_build": PROVIDER_BUILD,
+            "petals_relay_protocol": 1, "petals_capacity_protocol": 1}
 
 
 @lru_cache(maxsize=2)
@@ -66,6 +67,7 @@ class PetalsControl:
         self.phase = "idle"
         self.failure_status = None
         self.assignment = {}
+        self.capacity_job_id = None
 
     def _validated_image_id(self, device):
         expected = runtime_digest(device)
@@ -110,6 +112,40 @@ class PetalsControl:
         if not image_id:
             raise RuntimeError("Petals runtime build did not produce the expected source revision")
         return image_id
+
+    def measure_capacity(self, data, cpu_limit, memory_gb):
+        job_id = data.get("job_id", "")
+        if not re.fullmatch(r"[a-f0-9]{32}", job_id):
+            raise ValueError("Invalid capacity-probe job")
+        device = data.get("device", "cpu")
+        if device not in {"cpu", "cuda"}:
+            raise ValueError("Invalid capacity-probe device")
+        image = self._validated_image_id(device) or self.install_runtime(device)
+        folder = self.root / job_id
+        folder.mkdir(exist_ok=True)
+        (folder / "capacity-request.json").write_text(json.dumps({
+            "spec": data["spec"], "device": device, "cpu_limit": cpu_limit, "memory_gb": memory_gb}))
+        self.capacity_job_id = job_id
+        (folder / "capacity-lease").write_text(str(time.time()))
+        name = "ct-capacity-" + job_id[:12] + "-" + hashlib.sha256(str(self.root).encode()).hexdigest()[:8]
+        args = ["docker", "run", "--rm", "--name", name, "--memory", f"{memory_gb}g",
+                "--cpus", str(cpu_limit), "--pids-limit", "256", "--init",
+                "--security-opt", "no-new-privileges", "-e", f"OMP_NUM_THREADS={cpu_limit}",
+                "--mount", f"type=bind,source={folder.resolve()},target=/state",
+                "-v", "computetorrent-petals-cache:/cache"]
+        if device == "cuda":
+            args += ["--gpus", "device=0"]
+        args += ["--entrypoint", "python", image, "/app/capacity_probe.py"]
+        try:
+            output = command(args, timeout=3600)
+            record = next(line[12:] for line in reversed(output.splitlines()) if line.startswith("CT_CAPACITY "))
+            return json.loads(record)
+        finally:
+            self.capacity_job_id = None
+            try:
+                command(["docker", "rm", "-f", name], timeout=15)
+            except Exception:
+                pass
 
     def start(self, data, coordinator_url, cpu_limit, memory_gb):
         job_id = data.get("job_id", "")
@@ -172,24 +208,34 @@ class PetalsControl:
         # host.docker.internal resolves to the local Windows host from inside
         # Docker Desktop. Add it only on the coordinator PC itself; on a remote
         # volunteer PC it would point back to that volunteer and break DHT join.
+        is_lan = False
+        if coordinator_ip:
+            is_lan = coordinator_ip.is_private or coordinator_ip.is_loopback
+        else:
+            try:
+                resolved = socket.gethostbyname(coordinator_host)
+                is_lan = ipaddress.ip_address(resolved).is_private or ipaddress.ip_address(resolved).is_loopback
+            except Exception:
+                pass
+
         if not same_host:
-            # Extract target DHT coordinator IP from bootstrap list instead of coordinator_ip (which could be ngrok cloud proxy)
             dht_target_ip = None
             for b_peer in data.get("bootstrap", []):
-                match = re.search(r"/ip4/([0-9.]+)/tcp/31331", b_peer)
+                match = re.search(r"/(?:ip4|dns4)/([^/]+)/tcp/31331", b_peer)
                 if match:
                     dht_target_ip = match.group(1)
                     break
-            target_to_check = dht_target_ip or (str(coordinator_ip) if coordinator_ip and not coordinator_ip.is_loopback else None)
-            if target_to_check:
+            target_to_check = dht_target_ip or (str(coordinator_ip) if coordinator_ip and not coordinator_ip.is_loopback else coordinator_host)
+            if target_to_check and is_lan:
                 try:
                     with socket.create_connection((target_to_check, 31331), timeout=5):
                         pass
                 except OSError as exc:
-                    raise RuntimeError(
-                        f"Cannot reach coordinator DHT bootstrap at {target_to_check}:31331 from this PC. "
-                        "Allow inbound TCP 31331 on the coordinator's private LAN firewall and confirm both PCs are on the same LAN."
-                    ) from exc
+                    if not data.get("relay"):
+                        raise RuntimeError(
+                            f"Cannot reach coordinator DHT bootstrap at {target_to_check}:31331. "
+                            "Check the LAN firewall or configure the authenticated WSS relay."
+                        ) from exc
         for peer in data.get("bootstrap", []):
             if not same_host:
                 peer = re.sub(r"^/dns4/host\.docker\.internal(?=/tcp/)", f"/ip4/{coordinator_ip}", peer)
@@ -216,7 +262,7 @@ class PetalsControl:
                 "--label", "computetorrent.role=layer-provider", "--memory", f"{memory_gb}g",
                 "--cpus", str(cpu_limit), "--pids-limit", "256", "--shm-size", "1g",
                 "--init", "--security-opt", "no-new-privileges",
-                "-e", f"OMP_NUM_THREADS={cpu_limit}", "-p", f"{self.host_port}:31330",
+                "-e", f"OMP_NUM_THREADS={cpu_limit}", "-p", f"{self.host_port}:31330", "--dns", "8.8.8.8", "--dns", "1.1.1.1",
                 "--mount", f"type=bind,source={folder.resolve()},target=/state",
                 "-v", "computetorrent-petals-cache:/cache"]
         if same_host:
@@ -243,6 +289,11 @@ class PetalsControl:
                 pass  # Preserve the original error in heartbeats even if disk writes fail.
 
     def status(self, renew=True):
+        capacity_job = self.capacity_job_id
+        if capacity_job:
+            if renew:
+                (self.root / capacity_job / "capacity-lease").write_text(str(time.time()))
+            return {"job_id": capacity_job, "status": "profiling_capacity"}
         if not self.job_id:
             return {"status": "idle"}
         if self.failure_status:
@@ -259,11 +310,17 @@ class PetalsControl:
                 result = json.loads(path.read_text())
             running = command(["docker", "inspect", self.container, "--format", "{{.State.Running}}"])
             if running.lower() != "true":
-                if result.get("error"):
+                if result.get("error") and "inspect provider layer log" not in result["error"]:
                     result["status"] = "failed"
                     return result
-                tail = command(["docker", "logs", "--tail", "12", self.container], timeout=8)
-                raise RuntimeError("Petals layer container stopped: " + tail[-350:])
+                oom = command(["docker", "inspect", self.container, "--format", "{{.State.OOMKilled}}"], timeout=8)
+                if oom.lower() == "true":
+                    result.update(status="failed", error="Provider Docker memory limit exceeded (OOM). Reduce assigned layers or increase the provider RAM limit.")
+                    return result
+                tail = command(["docker", "logs", "--tail", "80", self.container], timeout=8)
+                (folder / "container.log").write_text(tail[-16000:], encoding="utf-8")
+                last = tail.strip().splitlines()[-1] if tail.strip() else "No stderr retained"
+                result.update(status="failed", error="Petals layer container stopped: " + last[-1200:])
         except Exception as exc:
             result.update(status="failed", error=result.get("error") or str(exc)[:1000])
         return result
@@ -272,6 +329,12 @@ class PetalsControl:
         if job_id and self.job_id != job_id:
             return
         if self.container:
+            try:
+                if self.job_id:
+                    log = command(["docker", "logs", "--tail", "80", self.container], timeout=8)
+                    (self.root / self.job_id / "container.log").write_text(log[-16000:], encoding="utf-8")
+            except Exception:
+                pass
             try:
                 command(["docker", "rm", "-f", self.container], timeout=15)
             except Exception:

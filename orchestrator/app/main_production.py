@@ -1,3 +1,5 @@
+from control_routes import candidates as route_candidates, proof as route_proof, register_digest
+import ipaddress
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import Request
@@ -37,7 +39,7 @@ try:
     Base = declarative_base()
     DB_AVAILABLE = True
 except Exception as e:
-    print(f"⚠️ Database connection failed: {e}")
+    print(f"[WARN] Database connection failed: {e}")
     print("Running in mock mode without database")
     DB_AVAILABLE = False
     Base = None
@@ -105,7 +107,7 @@ if DB_AVAILABLE:
         Base.metadata.create_all(bind=engine)
         print("✅ Database tables created")
     except Exception as e:
-        print(f"⚠️ Table creation warning: {e}")
+        print(f"[WARN] Table creation warning: {e}")
 # Mock storage is also initialized in database mode so request handlers can
 # use one shared code path for status and connected provider bookkeeping.
 MOCK_TASKS = {}
@@ -319,7 +321,7 @@ def valid_api_token(value: Optional[str]) -> bool:
 @app.middleware("http")
 async def protect_api(request: Request, call_next):
     if request.url.path.startswith("/api/") and request.url.path not in {
-        "/api/health", "/api/seeders/enroll", "/api/network/bootstrap",
+        "/api/health", "/api/seeders/enroll", "/api/network/bootstrap", "/api/network/identity",
         "/api/provider-update/manifest", "/api/provider-update/download"
     }:
         if not valid_api_token(request.headers.get("authorization")):
@@ -336,10 +338,32 @@ class ConnectionManager:
         self.seeder_info: Dict[str, dict] = {}
         self.round_robin_cursor = 0
     
-    async def connect(self, node_id: str, websocket: WebSocket):
+    async def connect(self, node_id: str, websocket: WebSocket, network_mode: str = "LAN", client_ip: str = ""):
+        old_socket = self.active_seeders.get(node_id)
         self.active_seeders[node_id] = websocket
-        self.seeder_info.setdefault(node_id, {})["last_seen"] = time.monotonic()
-        print(f"✅ Seeder connected: {node_id}")
+        if old_socket is not None and old_socket is not websocket:
+            try:
+                await old_socket.close(code=1000, reason="Replaced by new session")
+            except Exception:
+                pass
+        if self.active_seeders.get(node_id) is not websocket:
+            return False
+        info = self.seeder_info.setdefault(node_id, {})
+        info["last_seen"] = time.monotonic()
+        info["network_mode"] = network_mode
+        info["client_ip"] = client_ip
+        info["state"] = "online"
+        print(f"[OK] Seeder connected ({network_mode}): {node_id} from {client_ip}")
+        return True
+
+    def get_network_stats(self) -> dict:
+        lan_count = sum(1 for n in self.active_seeders if self.seeder_info.get(n, {}).get("network_mode") == "LAN")
+        wan_count = sum(1 for n in self.active_seeders if self.seeder_info.get(n, {}).get("network_mode") == "WAN")
+        return {
+            "total_active": len(self.active_seeders),
+            "lan_providers": lan_count,
+            "wan_providers": wan_count,
+        }
 
     def disconnect(self, node_id: str, websocket: WebSocket):
         if self.active_seeders.get(node_id) is not websocket:
@@ -370,6 +394,9 @@ class ConnectionManager:
         requirements = task.get("requirements", {})
         capable = []
         for node_id in candidates:
+            info = self.seeder_info.get(node_id, {})
+            if info.get("capacity_reservation") or info.get("busy") or info.get("state") in {"busy", "paused", "offline"}:
+                continue
             profile = self.seeder_info.get(node_id, {}).get("profile", {})
             if profile.get("docker_ok") is False:
                 continue
@@ -446,15 +473,30 @@ async def network_bootstrap():
 
 @app.get("/api/network")
 async def network_status():
-    """Expose local libp2p relay connectivity to the authenticated portal."""
+    """Expose hybrid LAN and WAN overlay connectivity to the authenticated portal."""
     url = os.getenv("COMPUTETORRENT_SWARM_URL", "http://127.0.0.1:4001").rstrip("/") + "/network-status"
+    swarm_info = {"status": "unavailable", "connected_peer_count": 0, "connected_peers": []}
     try:
         def read_network_status():
             with urllib.request.urlopen(url, timeout=5) as response:
                 return json.loads(response.read().decode("utf-8"))
-        return await asyncio.to_thread(read_network_status)
+        swarm_info = await asyncio.to_thread(read_network_status)
     except Exception:
-        return {"status": "unavailable", "connected_peer_count": 0, "connected_peers": []}
+        pass
+    stats = manager.get_network_stats()
+    return {
+        **swarm_info,
+        "hybrid_mode": "LAN+WAN",
+        # Proxy socket addresses and overlay connections don't prove Petals RPC reachability.
+        "connectivity_validation": {
+            "address_classification": "socket_peer_only",
+            "global_inference": "not_validated",
+            "automatic_petals_relay_fallback": "opt_in_integrated",
+        },
+        "total_active_providers": stats["total_active"],
+        "lan_providers": stats["lan_providers"],
+        "wan_providers": stats["wan_providers"],
+    }
 
 @app.get("/api/models")
 async def list_models():
@@ -467,15 +509,13 @@ async def list_models():
 async def get_enrollment_code(request: Request):
     if not valid_api_token(request.headers.get("authorization")):
         raise HTTPException(status_code=401, detail="Unauthorized")
-    return {"enrollment_token": SEEDER_ENROLLMENT_TOKEN or "local-volunteer-join"}
+    return {"enrollment_token": SEEDER_ENROLLMENT_TOKEN}
 
 @app.post("/api/seeders/enroll")
 async def enroll_seeder(enrollment: SeederEnrollment, request: Request):
     supplied = request.headers.get("x-enrollment-token", "").strip()
     is_valid = False
     if SEEDER_ENROLLMENT_TOKEN and hmac.compare_digest(supplied, SEEDER_ENROLLMENT_TOKEN):
-        is_valid = True
-    elif hmac.compare_digest(supplied, "local-volunteer-join"):
         is_valid = True
 
     if not is_valid:
@@ -855,6 +895,107 @@ async def credit_history(submitter_id: str = "web-portal", limit: int = 100):
     return {"account_id": submitter_id, "balance": sum(row["amount"] for row in rows),
             "entries": list(reversed(rows[-min(max(limit, 1), 500):]))}
 
+def credential_hash(node_id):
+    if DB_AVAILABLE:
+        db = get_db()
+        try:
+            credential = db.query(SeederCredential).filter(SeederCredential.node_id == node_id).first()
+            return credential.token_hash if credential else ""
+        finally:
+            db.close()
+    return MOCK_SEEDER_CREDENTIALS.get(node_id, "")
+
+
+def control_endpoints():
+    return route_candidates(json.loads(os.getenv("COMPUTETORRENT_PROVIDER_ENDPOINTS", "[]")))
+
+
+@app.post("/api/network/identity")
+async def network_identity(request: Request):
+    raw = await request.body()
+    if len(raw) > 2048:
+        raise HTTPException(400, "Invalid identity probe")
+    try:
+        data = json.loads(raw)
+    except (ValueError, UnicodeError):
+        raise HTTPException(400, "Invalid identity probe")
+    if not isinstance(data, dict):
+        raise HTTPException(400, "Invalid identity probe")
+    node, nonce, target = data.get("node_id", ""), data.get("nonce", ""), data.get("endpoint", "")
+    if (not isinstance(node, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,96}", node)
+            or not isinstance(nonce, str) or not re.fullmatch(r"[a-f0-9]{64}", nonce)
+            or target not in control_endpoints()):
+        raise HTTPException(400, "Invalid identity probe")
+    key = credential_hash(node)
+    if not key:
+        raise HTTPException(401, "Unknown or revoked provider")
+    return {"proof": route_proof(key, "ct-endpoint-v1", nonce, target)}
+
+
+control_endpoints()
+
+# WebSocket proxy for Petals WSS relay (Option 2: Global Hybrid Routing)
+@app.websocket("/ws/petals-relay/{route_id}")
+async def petals_relay_proxy(websocket: WebSocket, route_id: str):
+    """
+    Transparent WSS proxy between external volunteer nodes and internal Petals relay broker.
+    Terminates public TLS at Cloudflare/coordinator ingress and bridges directly to petals:8003.
+    """
+    import websockets
+    await websocket.accept()
+    auth_header = websocket.headers.get("authorization", "")
+    target_url = f"ws://petals:8003/ws/petals-relay/{route_id}"
+    extra_headers = {}
+    if auth_header:
+        extra_headers["Authorization"] = auth_header
+
+    try:
+        async with websockets.connect(
+            target_url,
+            extra_headers=extra_headers,
+            max_size=65536 + 10,
+            ping_interval=15,
+            ping_timeout=30
+        ) as backend_ws:
+            async def client_to_backend():
+                try:
+                    while True:
+                        msg = await websocket.receive()
+                        if "bytes" in msg and msg["bytes"]:
+                            await backend_ws.send(msg["bytes"])
+                        elif "text" in msg and msg["text"]:
+                            await backend_ws.send(msg["text"])
+                        elif msg.get("type") == "websocket.disconnect":
+                            break
+                except Exception:
+                    pass
+
+            async def backend_to_client():
+                try:
+                    async for raw in backend_ws:
+                        if isinstance(raw, bytes):
+                            await websocket.send_bytes(raw)
+                        else:
+                            await websocket.send_text(raw)
+                except Exception:
+                    pass
+
+            done, pending = await asyncio.wait(
+                [asyncio.create_task(client_to_backend()),
+                 asyncio.create_task(backend_to_client())],
+                return_when=asyncio.FIRST_COMPLETED
+            )
+            for t in pending:
+                t.cancel()
+    except Exception as exc:
+        print(f"[PETALS_RELAY_PROXY] Session ended for {route_id}: {exc}")
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+
 # WebSocket for seeders
 @app.websocket("/ws/seeder")
 async def websocket_seeder(websocket: WebSocket):
@@ -867,7 +1008,24 @@ async def websocket_seeder(websocket: WebSocket):
         # Wait for registration
         register_msg = await asyncio.wait_for(websocket.receive_text(), timeout=15)
         data = json.loads(register_msg)
-        
+        challenge = None
+        if isinstance(data, dict) and data.get("type") == "auth_challenge":
+            claimed = data.get("node_id", "")
+            nonce = data.get("nonce", "")
+            if (not isinstance(claimed, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,96}", claimed)
+                    or not isinstance(nonce, str) or not re.fullmatch(r"[a-f0-9]{64}", nonce)):
+                await websocket.close(code=1008, reason="Invalid authentication challenge")
+                return
+            key = credential_hash(claimed)
+            if not key:
+                await websocket.close(code=1008, reason="Provider enrollment is invalid or revoked")
+                return
+            server_nonce = secrets.token_hex(32)
+            await websocket.send_text(json.dumps({"type": "auth_challenge", "nonce": server_nonce,
+                "proof": route_proof(key, "ct-server-v1", nonce, server_nonce, claimed)}))
+            challenge = (claimed, nonce, server_nonce)
+            data = json.loads(await asyncio.wait_for(websocket.receive_text(), timeout=15))
+
         if not isinstance(data, dict) or data.get("type") != "register":
             await websocket.close(code=1008, reason="Registration required")
             return
@@ -880,22 +1038,30 @@ async def websocket_seeder(websocket: WebSocket):
                 return
             supplied_hash = hashlib.sha256((websocket.headers.get("authorization", "")[7:]
                                                if websocket.headers.get("authorization", "").startswith("Bearer ") else "").encode("utf-8")).hexdigest()
-            if DB_AVAILABLE:
-                db = get_db()
-                try:
-                    credential = db.query(SeederCredential).filter(SeederCredential.node_id == node_id).first()
-                    expected_hash = credential.token_hash if credential else ""
-                finally:
-                    db.close()
-            else:
-                expected_hash = MOCK_SEEDER_CREDENTIALS.get(node_id, "")
-            if not expected_hash or not hmac.compare_digest(supplied_hash, expected_hash):
+            expected_hash = credential_hash(node_id)
+            authenticated = bool(expected_hash and hmac.compare_digest(supplied_hash, expected_hash))
+            if challenge:
+                authenticated = (bool(expected_hash) and challenge[0] == node_id
+                    and hmac.compare_digest(str(data.get("proof", "")), route_proof(expected_hash,
+                        "ct-register-v1", challenge[1], challenge[2], register_digest(data))))
+            if not authenticated:
                 await websocket.close(code=1008, reason="Provider enrollment is invalid or revoked")
                 return
             
-            if node_id in manager.active_seeders:
-                await websocket.close(code=1013, reason="Provider already connected")
-                return
+            # Detect client network mode (LAN vs WAN)
+            reported_mode = data.get("network_mode")
+            if reported_mode in {"LAN", "WAN"}:
+                network_mode = reported_mode
+            else:
+                forwarded = websocket.headers.get("x-forwarded-for", "").split(",")[0].strip()
+                real_ip = websocket.headers.get("x-real-ip", "").strip()
+                client_host = forwarded or real_ip or (websocket.client.host if websocket.client else "unknown")
+                try:
+                    client_ip_obj = ipaddress.ip_address(client_host)
+                    is_lan = client_ip_obj.is_private or client_ip_obj.is_loopback
+                except ValueError:
+                    is_lan = False
+                network_mode = "LAN" if is_lan else "WAN"
 
             # Store seeder info
             tasks_completed = 0
@@ -946,14 +1112,22 @@ async def websocket_seeder(websocket: WebSocket):
                 tasks_completed = MOCK_SEEDERS[node_id]["tasks_completed"]
                 credits_earned = MOCK_SEEDERS[node_id]["credits_earned"]
             
-            await manager.connect(node_id, websocket)
-            manager.seeder_info[node_id].update(profile=profile or {}, state="idle", busy=False)
+            if not await manager.connect(node_id, websocket, network_mode=network_mode, client_ip=client_host):
+                return
+            server_host = websocket.headers.get("host", "").strip()
+            manager.seeder_info[node_id].update(
+                profile=profile or {}, state="idle", busy=False,
+                network_mode=network_mode, client_ip=client_host, server_host=server_host
+            )
             
             # Send ack
             await websocket.send_text(json.dumps({
                 "type": "register_ack",
                 "node_id": node_id,
-                "message": "Registration successful",
+                "network_mode": network_mode,
+                "client_ip": client_host,
+                "message": f"Registration successful ({network_mode} mode)",
+                "coordinator_endpoints": control_endpoints(),
                 "tasks_completed": tasks_completed,
                 "credits_earned": credits_earned
             }))
@@ -967,6 +1141,9 @@ async def websocket_seeder(websocket: WebSocket):
                 if remaining <= 0:
                     raise asyncio.TimeoutError
                 message = await asyncio.wait_for(websocket.receive_text(), timeout=remaining)
+                # A replaced socket may still deliver a buffered message after close.
+                if manager.active_seeders.get(node_id) is not websocket:
+                    return
                 data = json.loads(message)
                 if not isinstance(data, dict):
                     await websocket.close(code=1008, reason="Invalid provider message")
@@ -976,7 +1153,8 @@ async def websocket_seeder(websocket: WebSocket):
     except WebSocketDisconnect:
         pass
     except asyncio.TimeoutError:
-        await websocket.close(code=1013, reason="Provider heartbeat expired")
+        if node_id is None or manager.active_seeders.get(node_id) is websocket:
+            await websocket.close(code=1013, reason="Provider heartbeat expired")
     except (ValueError, TypeError):
         await websocket.close(code=1008, reason="Invalid provider message")
     finally:
@@ -1021,6 +1199,15 @@ async def handle_seeder_message(node_id: str, data: dict):
     '''Handle messages from seeders'''
     msg_type = data.get("type")
     
+    if msg_type == "petals_capacity_result":
+        info = manager.seeder_info.get(node_id, {})
+        if not info.get("capacity_reservation") or data.get("job_id") != info["capacity_reservation"]:
+            return
+        if isinstance(data.get("measurement"), dict):
+            info.setdefault("profile", {})["petals_capacity"] = data["measurement"]
+        info["capacity_response"] = {"job_id": data["job_id"], "error": data.get("error"),
+                                     "state": "paused" if data.get("state") == "paused" else "idle"}
+        return
     if msg_type == "heartbeat":
         manager.seeder_info.setdefault(node_id, {})["last_seen"] = time.monotonic()
         manager.seeder_info[node_id]["state"] = data.get("state", "online")

@@ -1,3 +1,6 @@
+import hmac
+import secrets
+from connection_routes import select_endpoint, candidates as route_candidates, proof as route_proof, register_digest
 import customtkinter as ctk
 import asyncio
 import ipaddress
@@ -93,6 +96,16 @@ def normalize_coordinator_address(value):
                 return candidate
     parsed = urlsplit(value)
     scheme = {"https": "wss", "http": "ws"}.get(parsed.scheme, parsed.scheme)
+    if parsed.hostname and parsed.hostname != "localhost":
+        private_ranges = ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
+                          "127.0.0.0/8", "::1/128", "fc00::/7")
+        try:
+            address = ipaddress.ip_address(parsed.hostname)
+            is_private = any(address in ipaddress.ip_network(net) for net in private_ranges)
+        except ValueError:
+            is_private = False
+        if not is_private and scheme in {"http", "ws"}:
+            scheme = "wss"
     if parsed.path in {"", "/"}:
         parsed = parsed._replace(path="/ws/seeder")
     endpoint = urlunsplit(parsed._replace(scheme=scheme))
@@ -148,7 +161,7 @@ ctk.set_default_color_theme("blue")
 
 # Configuration
 DEFAULT_ORCHESTRATOR_URL = os.getenv("ORCHESTRATOR_URL", "ws://127.0.0.1:8001/ws/seeder")
-DEFAULT_ENROLLMENT_TOKEN = os.getenv("COMPUTETORRENT_SEEDER_ENROLLMENT_TOKEN", "local-volunteer-join")
+DEFAULT_ENROLLMENT_TOKEN = os.getenv("COMPUTETORRENT_SEEDER_ENROLLMENT_TOKEN", "")
 
 class ComputeTorrentSeeder(ctk.CTk):
     def __init__(self):
@@ -913,8 +926,7 @@ class ComputeTorrentSeeder(ctk.CTk):
         request = urllib.request.Request(enrollment_url, data=payload, method="POST", headers={
             "Content-Type": "application/json",
             "X-Enrollment-Token": token_to_send,
-            "ngrok-skip-browser-warning": "69420",
-            "User-Agent": "ComputeTorrent-Provider/1.0"
+                        "User-Agent": "ComputeTorrent-Provider/1.0"
         })
         with urllib.request.build_opener(EnrollmentNoRedirect()).open(request, timeout=15) as response:
             enrollment = json.loads(response.read(65536))
@@ -1008,8 +1020,7 @@ class ComputeTorrentSeeder(ctk.CTk):
             coordinator_port = f":{parsed.port}" if parsed.port else (":443" if scheme == "https" else ":80")
             peer_info_url = f"{scheme}://{host_part}{coordinator_port}/api/network/bootstrap"
             req = urllib.request.Request(peer_info_url, headers={
-                "ngrok-skip-browser-warning": "69420",
-                "User-Agent": "ComputeTorrent-Provider/1.0"
+                                "User-Agent": "ComputeTorrent-Provider/1.0"
             })
             with urllib.request.urlopen(req, timeout=10) as response:
                 peer_info = json.loads(response.read().decode("utf-8"))
@@ -1037,7 +1048,8 @@ class ComputeTorrentSeeder(ctk.CTk):
                         raise RuntimeError("libp2p helper exited; see libp2p.log")
                     line = output.readline()
                     if line and b'"type":"libp2p_joined"' in line:
-                        self.update_status("Connected")
+                        mode_str = f" ({self.network_mode})" if hasattr(self, 'network_mode') and self.network_mode else ""
+                        self.update_status(f"Connected{mode_str}")
                         return
                     time.sleep(0.1)
             if self.libp2p_process.poll() is None:
@@ -1080,10 +1092,17 @@ class ComputeTorrentSeeder(ctk.CTk):
                     self.enrollment_token = ""
                     self.save_settings()
 
+                settings = getattr(self, "settings", {})
+                alternatives = (settings.get("coordinator_candidates", [])
+                    if settings.get("candidate_origin") == self.orchestrator_url else [])
+                connection_url = self.orchestrator_url
+                if alternatives:
+                    connection_url = await asyncio.to_thread(select_endpoint, self.orchestrator_url,
+                        alternatives, self.node_id, self.access_token)
+                use_challenge = connection_url != self.orchestrator_url
                 headers = {
-                    "Authorization": f"Bearer {self.access_token}",
-                    "ngrok-skip-browser-warning": "69420",
-                    "User-Agent": "ComputeTorrent-Provider/1.0",
+                    **({} if use_challenge else {"Authorization": f"Bearer {self.access_token}"}),
+                                        "User-Agent": "ComputeTorrent-Provider/1.0",
                 }
                 connect_kwargs = {
                     "open_timeout": 45,
@@ -1093,11 +1112,24 @@ class ComputeTorrentSeeder(ctk.CTk):
                     "max_size": 100 * 1024 * 1024,
                 }
                 async with CoordinatorConnect(
-                    self.orchestrator_url, extra_headers=headers, **connect_kwargs
+                    connection_url, extra_headers=headers, **connect_kwargs
                 ) as websocket:
                     # Send registration
+                    parsed_conn = urlsplit(connection_url)
+                    conn_host = parsed_conn.hostname or ""
+                    is_local = conn_host in {"localhost", "127.0.0.1"}
+                    if not is_local:
+                        try:
+                            addr = ipaddress.ip_address(conn_host)
+                            is_local = addr.is_private or addr.is_loopback
+                        except ValueError:
+                            is_local = False
+                    reported_net_mode = "LAN" if is_local else "WAN"
+                    self.network_mode = reported_net_mode
+
                     register_msg = {
                         "type": "register",
+                        "network_mode": reported_net_mode,
                         "node_id": self.node_id,
                         "tier": self.profile["tier"],
                         "profile": {**self.profile,
@@ -1112,6 +1144,20 @@ class ComputeTorrentSeeder(ctk.CTk):
                         }
                     }
                     
+                    if use_challenge:
+                        client_nonce = secrets.token_hex(32)
+                        await websocket.send(json.dumps({"type": "auth_challenge", "node_id": self.node_id,
+                                                         "nonce": client_nonce}))
+                        challenge = json.loads(await asyncio.wait_for(websocket.recv(), 15))
+                        server_nonce = challenge.get("nonce", "")
+                        key_hash = hashlib.sha256(self.access_token.encode()).hexdigest()
+                        expected = route_proof(key_hash, "ct-server-v1", client_nonce, server_nonce, self.node_id)
+                        if (challenge.get("type") != "auth_challenge" or not isinstance(server_nonce, str)
+                                or len(server_nonce) != 64
+                                or not hmac.compare_digest(str(challenge.get("proof", "")), expected)):
+                            raise ValueError("Alternate endpoint did not prove coordinator identity")
+                        register_msg["proof"] = route_proof(key_hash, "ct-register-v1", client_nonce,
+                                                           server_nonce, register_digest(register_msg))
                     await websocket.send(json.dumps(register_msg))
                     self.set_connection_state("Registering", "Waiting for coordinator confirmation.")
                     first = await asyncio.wait_for(websocket.recv(), timeout=15)
@@ -1119,6 +1165,11 @@ class ComputeTorrentSeeder(ctk.CTk):
                     if (not isinstance(ack, dict) or ack.get("type") != "register_ack"
                             or ack.get("node_id") != self.node_id):
                         raise ValueError("Coordinator did not acknowledge this provider identity")
+                    self.active_coordinator_url = connection_url
+                    if "coordinator_endpoints" in ack and hasattr(self, "settings"):
+                        self.settings.update(coordinator_candidates=route_candidates(ack["coordinator_endpoints"]),
+                                             candidate_origin=self.orchestrator_url)
+                        self.save_settings()
                     self.websocket = websocket
                     self.is_connected = True
                     retry_count = 0
@@ -1146,10 +1197,9 @@ class ComputeTorrentSeeder(ctk.CTk):
                         
             except websockets.exceptions.ConnectionClosed as error:
                 if error.rcvd is not None and error.rcvd.code == 1008:
-                    self.access_token = None
-                    self.node_id = None
-                    self.enrollment_token = self.enrollment_token or DEFAULT_ENROLLMENT_TOKEN
-                    self.connection_note = "Credentials refreshed. Re-enrolling with coordinator..."
+                    # Revocation must not create a new identity using a remembered join code.
+                    self.set_connection_state("Error", "Provider access was rejected. Ask the operator to restore access or explicitly enroll again.")
+                    return
                 else:
                     self.connection_note = "Coordinator connection closed."
             except Exception as error:
@@ -1176,6 +1226,16 @@ class ComputeTorrentSeeder(ctk.CTk):
         while not self.shutting_down and self.websocket == websocket:
             try:
                 await self.send_heartbeat_once(websocket)
+                settings = getattr(self, "settings", {})
+                if (not self.current_task and settings.get("candidate_origin") == self.orchestrator_url
+                        and settings.get("coordinator_candidates")
+                        and time.monotonic() >= getattr(self, "_next_route_probe", 0)):
+                    self._next_route_probe = time.monotonic() + 60
+                    preferred = await asyncio.to_thread(select_endpoint, self.orchestrator_url,
+                        settings["coordinator_candidates"], self.node_id, self.access_token)
+                    active = getattr(self, "active_coordinator_url", self.orchestrator_url)
+                    if urlsplit(preferred).scheme == "ws" and urlsplit(active).scheme == "wss":
+                        await websocket.close(code=1000, reason="Verified LAN route available")
             except Exception:
                 # Do not break loop on transient heartbeat errors
                 pass
@@ -1231,8 +1291,32 @@ class ComputeTorrentSeeder(ctk.CTk):
                 self.credits_earned = float(data.get("credits_earned", self.credits_earned))
                 self.update_tasks_count(self.tasks_completed)
                 self.update_credits(self.credits_earned)
-                self.update_status("Connected")
+                net_mode = data.get("network_mode", "LAN")
+                self.network_mode = net_mode
+                self.update_status(f"Connected ({net_mode})")
             
+            if msg_type == "petals_capacity":
+                if self.current_task or self.paused or not self.petals_enabled:
+                    await self.websocket.send(json.dumps({"type": "petals_capacity_result",
+                        "job_id": data["job_id"], "error": "Provider is busy, paused or not opted in"}))
+                    return
+                self.current_task = "Petals capacity: " + data["job_id"][:8]
+                self.update_task_info("Measuring native Petals block capacity and compute speed")
+                self.update_status("Measuring model capacity")
+                try:
+                    measurement = await asyncio.to_thread(self.petals.measure_capacity, data,
+                                                          self.cpu_limit, self.memory_limit_gb)
+                    self.profile["petals_capacity"] = measurement
+                    self.current_task = None
+                    await self.websocket.send(json.dumps({"type": "petals_capacity_result",
+                        "job_id": data["job_id"], "measurement": measurement,
+                        "state": "paused" if self.paused else "idle"}))
+                except Exception as exc:
+                    await self.websocket.send(json.dumps({"type": "petals_capacity_result",
+                        "job_id": data["job_id"], "error": str(exc)[-1000:]}))
+                finally:
+                    self.current_task = None
+                return
             elif msg_type == "petals_start":
                 if self.paused or not self.petals_enabled or self.current_task:
                     error = 'Layer sharing is disabled or provider is busy'
@@ -1251,7 +1335,8 @@ class ComputeTorrentSeeder(ctk.CTk):
                     self.update_status(f"Serving layers {start_layer}–{end_layer} of {model_id}")
                     if hasattr(self, 'layer_label'):
                         self.after(0, lambda: self.layer_label.configure(text=f"🟢 Active Task: Layers {start_layer}–{end_layer} assigned", text_color="#00d4ff"))
-                    await asyncio.to_thread(self.petals.start, data, self.orchestrator_url, self.cpu_limit, self.memory_limit_gb)
+                    await asyncio.to_thread(self.petals.start, data,
+                        getattr(self, "active_coordinator_url", self.orchestrator_url), self.cpu_limit, self.memory_limit_gb)
                     self.profile.update(await asyncio.to_thread(self.petals.capabilities))
                     self.profile['petals'] = await asyncio.to_thread(self.petals.status)
                     await websocket_profile(self)
@@ -1559,7 +1644,7 @@ class ComputeTorrentSeeder(ctk.CTk):
         if hasattr(self, 'status_label') and not self.shutting_down:
             try:
                 clean = str(text).strip()
-                display_text = "Connected" if clean.lower() == "connected" else (clean if clean.lower().startswith("activity:") else f"Activity: {clean}")
+                display_text = clean if clean.lower().startswith("connected") else (clean if clean.lower().startswith("activity:") else f"Activity: {clean}")
                 self.after(0, lambda: self.status_label.configure(text=display_text)
                            if not self.shutting_down and self.status_label.winfo_exists() else None)
             except RuntimeError:
@@ -1617,4 +1702,6 @@ def main():
     app.mainloop()
 
 if __name__ == "__main__":
+    import multiprocessing
+    multiprocessing.freeze_support()
     main()

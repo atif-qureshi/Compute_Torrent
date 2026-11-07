@@ -13,7 +13,7 @@ async def reachable_bootstrap(candidates, attempts=2, create_peer=None):
             try:
                 peer = await create_peer(
                     initial_peers=[address], no_listen=True, dht_mode="client",
-                    use_relay=False, use_auto_relay=False, auto_nat=False,
+                    use_relay=True, use_auto_relay=True, auto_nat=True,
                     nat_port_map=False, startup_timeout=20,
                 )
                 return [address]

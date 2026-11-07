@@ -58,14 +58,14 @@ app.get("/health", (_req, res) => res.json({ status: "ok", active_swarms: active
 app.get("/peer-info", (_req, res) => res.json({
   peer_id: relay.peerId,
   multiaddr: relay.address,
-  protocol: "/computetorrent/lan/kad/1.0.0",
+  protocol: "/computetorrent/kad/1.0.0",
   relay: "circuit-relay-v2",
   peers: relayStatus(relay.node),
 }));
 app.get("/network-status", (_req, res) => res.json({
   peer_id: relay.peerId,
   relay: "circuit-relay-v2",
-  dht_protocol: "/computetorrent/lan/kad/1.0.0",
+  dht_protocol: "/computetorrent/kad/1.0.0",
   connected_peers: relayStatus(relay.node),
   connected_peer_count: relayStatus(relay.node).length,
 }));

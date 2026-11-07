@@ -801,3 +801,11 @@ Complete tasks sequentially, making small and verifiable changes. Run appropriat
 Do not repeat completed work or overwrite verified implementations unnecessarily.
 
 At the end of the current phase, provide a detailed completion report and stop for review before proceeding to the next phase.
+
+## Networking audit checkpoint — 2026-11-07
+
+The supplied hybrid networking requirements were audited and concrete control/session/recovery/security regressions corrected; see docs/hybrid-network-audit.md and docs/testing-results.md. 52 selected tests passed; 7 existing signed-updater tests still error because the previous signed implementation is absent. No live services, deployment or provider release was authorized by this audit. Phase 3 stays Partially Validated — Remaining Integration Tests Pending. Automatic LAN/WAN endpoint selection, production Petals relay routing, real multi-peer inference and external-network acceptance remain open; retain the development fallback. This checkpoint does not start Phase 5 or certify production readiness.
+
+## Follow-up integration evidence — 2026-11-07
+
+The selected custom WSS adapter is now integrated with gateway leases, worker routing and coordinator assignments, while preserving native Petals DHT/RPC/TLS. Two isolated native-worker inference runs passed for tiny random BLOOM and Llama/GQA, including the production stage pipeline and local boundary/canary verification. See docs/petals-relay-integration.md. Actual multiple-PC/CGNAT acceptance remains unverified because no second test system is available. Phase 3 stays partially validated. Operator-controlled updater configuration is unchanged by this follow-up; the existing updater assertion failure is recorded explicitly. No new roadmap phase or public deployment was started.

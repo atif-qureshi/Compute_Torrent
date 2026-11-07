@@ -62,14 +62,15 @@ class CoordinatorTests(unittest.TestCase):
                         self.assertEqual(denied.exception.code, 1008)
                     with client.websocket_connect("/ws/seeder", headers=headers) as duplicate:
                         duplicate.send_json(message)
-                        with self.assertRaises(WebSocketDisconnect) as denied:
+                        self.assertEqual(duplicate.receive_json()["node_id"], identity["node_id"])
+                        with self.assertRaises(WebSocketDisconnect) as replaced:
+                            first.receive_json()
+                        self.assertEqual(replaced.exception.code, 1000)
+                        status = client.get("/api/seeders", headers={"Authorization": "Bearer fixture-api"}).json()
+                        self.assertIsNotNone(status[0]["control_age_seconds"])
+                        with self.assertRaises(WebSocketDisconnect) as stale:
                             duplicate.receive_json()
-                        self.assertEqual(denied.exception.code, 1013)
-                    status = client.get("/api/seeders", headers={"Authorization": "Bearer fixture-api"}).json()
-                    self.assertIsNotNone(status[0]["control_age_seconds"])
-                    with self.assertRaises(WebSocketDisconnect) as stale:
-                        first.receive_json()
-                    self.assertEqual(stale.exception.code, 1013)
+                        self.assertEqual(stale.exception.code, 1013)
                 with client.websocket_connect("/ws/seeder", headers=headers) as reconnect:
                     reconnect.send_json(message)
                     self.assertEqual(reconnect.receive_json()["node_id"], identity["node_id"])

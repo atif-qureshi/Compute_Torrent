@@ -108,6 +108,25 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(status["status"], "failed")
         self.assertEqual(docker.call_count, 1)  # Docker log tail must not replace the worker diagnosis.
 
+    def test_oom_reports_memory_limit_instead_of_generic_exit(self):
+        self.control.job_id = JOB
+        self.control.container = "oom-container"
+        (self.control.root / JOB).mkdir()
+        with patch.object(provider, "command", side_effect=["false", "true"]):
+            status = self.control.status()
+        self.assertEqual(status["status"], "failed")
+        self.assertIn("OOM", status["error"])
+
+    def test_cleanup_retains_container_log(self):
+        self.control.job_id = JOB
+        self.control.container = "failed-container"
+        folder = self.control.root / JOB
+        folder.mkdir()
+        with patch.object(provider, "command", side_effect=["TypeError: fixture root cause", ""]):
+            self.control.stop(JOB)
+        self.assertIn("fixture root cause", (folder / "container.log").read_text())
+        self.assertIsNone(self.control.container)
+
     def test_startup_failure_survives_repeated_status_heartbeats(self):
         with patch.object(self.control, "_start", side_effect=RuntimeError("DHT port is unreachable")), \
                 patch.object(provider, "command") as docker:

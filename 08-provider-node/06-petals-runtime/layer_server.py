@@ -32,10 +32,10 @@ def serve(request):
             block_indices=f"{stage['start']}:{stage['end']}", device=stage["device"],
             torch_dtype="float32", quant_type=QuantType.NONE, compression=CompressionType.NONE,
             host_maddrs=["/ip4/0.0.0.0/tcp/31330"], announce_maddrs=request["advertise_maddrs"],
-            # These are directly published trusted-LAN ports. Do not attempt to
-            # discover public relays or run the public-swarm reachability probe.
-            reachable_via_relay=False, use_relay=False, use_auto_relay=False,
-            auto_nat=False, nat_port_map=False, startup_timeout=30,
+            # WSS mapped workers are DHT clients; direct LAN servers remain full peers.
+            reachable_via_relay=request.get("transport") == "wss", use_relay=True, use_auto_relay=True,
+            skip_reachability_check=True,
+            auto_nat=True, nat_port_map=False, startup_timeout=45,
             inference_max_length=512, attn_cache_tokens=1024, num_handlers=2,
             max_disk_space=8 * 1024**3, throughput="auto", balance_quality=0,
             update_period=10,

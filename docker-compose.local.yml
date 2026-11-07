@@ -40,6 +40,8 @@ services:
       COMPUTETORRENT_PETALS_URL: http://petals:8002
       COMPUTETORRENT_JOB_DATA: /data/distributed
       COMPUTETORRENT_PROVIDER_UPDATE_DIR: /data/provider-updates
+      COMPUTETORRENT_PROVIDER_ENDPOINTS: ${COMPUTETORRENT_PROVIDER_ENDPOINTS:-[]}
+      COMPUTETORRENT_PETALS_NETWORK_POLICY: ${COMPUTETORRENT_PETALS_NETWORK_POLICY:-auto}
     volumes:
       - ./runtime/swarm:/data
       - ./runtime/provider-updates:/data/provider-updates:ro
@@ -79,11 +81,14 @@ services:
       COMPUTETORRENT_API_TOKEN: ${COMPUTETORRENT_API_TOKEN:?Set COMPUTETORRENT_API_TOKEN in .env}
       PETALS_ADVERTISE_HOST: ${COMPUTETORRENT_LIBP2P_ADVERTISE_HOST:-127.0.0.1}
       PETALS_JOB_DIR: /jobs
+      PETALS_RELAY_PUBLIC_URL: ${PETALS_RELAY_PUBLIC_URL:-}
     volumes:
       - ./runtime/petals-cache:/cache
       - ./runtime/petals-jobs:/jobs
     ports:
       - "127.0.0.1:8002:8002"
+      # Only a TLS ingress on this host may forward the relay listener.
+      - "127.0.0.1:8003:8003"
       - "${COMPUTETORRENT_BIND_IP:-127.0.0.1}:31331:31331/tcp"
     mem_limit: 6g
     cpus: 2

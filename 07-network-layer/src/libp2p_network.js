@@ -4,17 +4,16 @@ import { noise } from "@libp2p/noise";
 import { yamux } from "@chainsafe/libp2p-yamux";
 import { identify } from "@libp2p/identify";
 import { ping } from "@libp2p/ping";
-import { kadDHT, removePublicAddressesMapper } from "@libp2p/kad-dht";
+import { kadDHT } from "@libp2p/kad-dht";
 import { circuitRelayServer, circuitRelayTransport } from "@libp2p/circuit-relay-v2";
 import { bootstrap } from "@libp2p/bootstrap";
 import { mdns } from "@libp2p/mdns";
 import { multiaddr } from "@multiformats/multiaddr";
 
-const DHT_PROTOCOL = "/computetorrent/lan/kad/1.0.0";
+const DHT_PROTOCOL = "/computetorrent/kad/1.0.0";
 const dht = (clientMode) => kadDHT({
   protocol: DHT_PROTOCOL,
   clientMode,
-  peerInfoMapper: removePublicAddressesMapper,
 });
 
 export async function createRelayNode({ port = 9100, advertiseHost = "127.0.0.1" } = {}) {
@@ -31,12 +30,13 @@ export async function createRelayNode({ port = 9100, advertiseHost = "127.0.0.1"
     },
   });
   const peerId = node.peerId.toString();
-  const address = `/ip4/${advertiseHost}/tcp/${port}/p2p/${peerId}`;
+  const proto = /^[0-9.]+$/.test(advertiseHost) ? "ip4" : "dns4";
+  const address = `/${proto}/${advertiseHost}/tcp/${port}/p2p/${peerId}`;
   return { node, peerId, address };
 }
 
-export async function joinRelayNetwork(bootstrapAddress) {
-  const peerDiscovery = [mdns()];
+export async function joinRelayNetwork(bootstrapAddress, { discoverLan = true } = {}) {
+  const peerDiscovery = discoverLan ? [mdns()] : [];
   if (bootstrapAddress) {
     // Use an explicit coordinator as the LAN DHT bootstrap and circuit relay.
     peerDiscovery.unshift(bootstrap({ list: [bootstrapAddress], tagName: "computetorrent-relay", tagValue: 100 }));

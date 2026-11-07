@@ -95,3 +95,25 @@ See the [Phase 3 implementation record](phase-3-connectivity.md). Phase 3 is ope
 | 4.8–4.10 Recovery, actionable errors and stability | Implemented | Loopback disconnect, reconnection, identity rejection and loss during a busy handler tested. |
 
 [Phase 4 implementation record](phase-4-provider-connection.md) documents the canonical provider changes. Eight focused tests and the 26 existing regressions passed. Real volunteer acceptance remains pending. Phase 5 has not started.
+
+## Local provider restart hotfix, 2026-11-07
+
+Corrected independent PyInstaller restart environment handling in canonical and legacy provider sources; local build identifier is `2026.11.07-hybrid3`. Two focused tests and a disposable frozen parent/child restart probe passed (see testing-results.md). The unsigned updater found in the current checkout is disabled at all public entrypoints pending restoration of the approved signed verifier. Existing release restrictions remain active. No live service was restarted and no production update was published. This hotfix does not advance the roadmap phase or establish full installer-upgrade validation.
+
+## Hybrid networking verification and containment, 2026-11-07
+
+Reviewed the supplied Hybrid LAN and Global P2P requirements against actual control, overlay, transfer and Petals code. Fixed registration's missing import, concurrent socket ownership/late-message/double-close errors, capacity-unsafe recovery and stale inference sessions, unconditional enrollment fallback and automatic revoked-client re-enrollment. Restored canonical legacy updater 410 endpoints, kept client updates disabled, disabled automatic gateway router mapping, explicitly pinned the imported ping dependency, and added a real isolated overlay test. Canonical and legacy provider-shell fixes match.
+
+Evidence: 52 selected tests pass (including 10 production-path recovery checks and one real loopback overlay test). Seven existing signed-updater tests error due to the missing prior verifier implementation; that release gate remains blocked. Actual LAN/WAN Petals inference, automatic authenticated LAN/WAN endpoint selection and production relay integration remain incomplete. See [hybrid audit](hybrid-network-audit.md) and testing-results.md. Phase 3 remains Partially Validated — Remaining Integration Tests Pending. No live service restart, new installer build, publication or Phase 5 work occurred.
+
+## Integrated relay and TinyLlama diagnostics — 2026-11-07
+
+The follow-up integration is now implemented; see [Petals relay integration](petals-relay-integration.md). Gateway-scoped WSS leases carry native Petals TCP/RPC in both directions; worker-side reverse reachability prefers direct LAN and selects WSS fallback. Alternate coordinator endpoints use per-node identity proofs and challenge-based registration without forwarding bearer secrets. Active KV sessions are not migrated.
+
+Offline, network-disabled fixtures with two native worker processes passed both tiny random Llama/GQA and BLOOM generation. The actual production stage-by-stage pipeline, local boundary replay and canary checks completed in both cases, with 31,460 and 37,508 post-startup TCP payload bytes respectively. These are real native integration tests, not physical multiple-PC or CGNAT acceptance. The operator confirmed no second test PC is currently available; those gates remain open.
+
+The reported TinyLlama-1.1B job's failed peer traceback was unavailable. Exact-revision local cache inspection found config only, no complete weight file. This does not establish the other peer's cause. Added retained layer/container logs, exception-first status details and OOM-specific errors. Updater behavior was explicitly placed under operator control and was left untouched after that instruction; do not interpret historical disabled-updater statements as current configuration. The retained legacy-retirement test currently conflicts with that operator configuration and is not silently removed.
+
+No live service restart, public deployment or feed publication was performed by this work. Phase 3 is still Partially Validated — Remaining Integration Tests Pending. Phase 5 has not started.
+
+A local hybrid4 Windows installer was rebuilt with the relay and retained-diagnostics code. Hashes, setup version and embedded runtime source contents were verified. Updater settings/feed remain operator-controlled and unchanged. Manual installation is available for the next authorized test; the existing live stack was not restarted.

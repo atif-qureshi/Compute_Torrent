@@ -5,7 +5,7 @@ Downloads the installer (.exe) from the coordinator's HTTP API:
   GET /api/provider-update/manifest  → JSON with version, filename, sha256, size
   GET /api/provider-update/download  → raw EXE bytes
 
-No Ed25519 signing required for development/LAN deployments.
+Legacy unsigned transport retained for investigation. Download and execution are disabled.
 """
 import hashlib
 import json
@@ -22,6 +22,16 @@ from urllib.parse import urlsplit, urlunsplit
 
 MAX_MANIFEST = 65536               # 64 KB max JSON
 MAX_PACKAGE  = 600 * 1024 * 1024   # 600 MB max installer
+
+
+def restart_environment():
+    """Launch an independent frozen app without altering the current process."""
+    environment = {
+        key: value for key, value in os.environ.items()
+        if not key.upper().startswith(("_PYI_", "PYI_", "_MEI"))
+    }
+    environment["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    return environment
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -202,9 +212,14 @@ def restart_with_update(staged, data_dir, *, current_build: str = ""):
 
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
+    # Clean environment without PyInstaller internal variables so that
+    # the updater script and any restarted processes start as a fresh master bootloader
+    clean_env = restart_environment()
+
     if is_frozen and target and target.is_file():
         # Running as compiled standalone executable: replace and restart
-        script.write_text(f'''param([int]$OldPid, [string]$Source, [string]$Destination)
+        dest_dir = str(target.parent)
+        script.write_text(f'''param([int]$OldPid, [string]$Source, [string]$Destination, [string]$WorkDir)
 $ErrorActionPreference = 'Stop'
 while (Get-Process -Id $OldPid -ErrorAction SilentlyContinue) {{ Start-Sleep -Milliseconds 400 }}
 for ($attempt = 0; $attempt -lt 30; $attempt++) {{
@@ -216,11 +231,20 @@ for ($attempt = 0; $attempt -lt 30; $attempt++) {{
         Start-Sleep -Milliseconds 800
     }}
 }}
-Start-Process -FilePath $Destination
+# Clean PyInstaller internal variables so restarted process starts as a clean master bootloader
+Remove-Item Env:\_MEIPASS* -ErrorAction SilentlyContinue
+Remove-Item Env:\_PYI_* -ErrorAction SilentlyContinue
+Remove-Item Env:\PYI_* -ErrorAction SilentlyContinue
+$env:PYINSTALLER_RESET_ENVIRONMENT = "1"
+[System.Environment]::SetEnvironmentVariable("_MEIPASS2", $null, "Process")
+[System.Environment]::SetEnvironmentVariable("_MEIPASS", $null, "Process")
+Start-Process -FilePath $Destination -WorkingDirectory $WorkDir
 ''', encoding="utf-8")
         subprocess.Popen(
             ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script),
-             "-OldPid", str(os.getpid()), "-Source", str(path.resolve()), "-Destination", str(target)],
+             "-OldPid", str(os.getpid()), "-Source", str(path.resolve()), "-Destination", str(target),
+             "-WorkDir", dest_dir],
+            env=clean_env,
             creationflags=flags
         )
     else:
@@ -248,13 +272,20 @@ Start-Process -FilePath $Destination
             script.write_text(f'''param([int]$OldPid, [string]$BatPath)
 $ErrorActionPreference = 'Stop'
 while (Get-Process -Id $OldPid -ErrorAction SilentlyContinue) {{ Start-Sleep -Milliseconds 500 }}
-Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "`"$BatPath`""
+Remove-Item Env:\_MEIPASS* -ErrorAction SilentlyContinue
+Remove-Item Env:\_PYI_* -ErrorAction SilentlyContinue
+Remove-Item Env:\PYI_* -ErrorAction SilentlyContinue
+$env:PYINSTALLER_RESET_ENVIRONMENT = "1"
+[System.Environment]::SetEnvironmentVariable("_MEIPASS2", $null, "Process")
+[System.Environment]::SetEnvironmentVariable("_MEIPASS", $null, "Process")
+Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "`"$BatPath`"" -WorkingDirectory (Split-Path $BatPath)
 ''', encoding="utf-8")
             subprocess.Popen(
                 ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script),
                  "-OldPid", str(os.getpid()), "-BatPath", str(bat_path.resolve())],
+                env=clean_env,
                 creationflags=flags
             )
         else:
             # Fallback: start downloaded exe directly without hiding window
-            subprocess.Popen([str(path.resolve())], creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+            subprocess.Popen([str(path.resolve())], env=clean_env, creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))

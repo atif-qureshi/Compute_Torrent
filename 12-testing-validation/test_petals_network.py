@@ -35,7 +35,7 @@ class BootstrapTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(calls), 2)
         self.assertEqual(closed, [True])
         self.assertTrue(calls[0]["no_listen"])
-        self.assertFalse(calls[0]["use_auto_relay"])
+        self.assertTrue(calls[0]["use_auto_relay"])
         self.assertNotIn("tls", calls[0])  # Keep the upstream secure default.
 
     async def test_failure_reports_the_actual_peer_address(self):

@@ -4,20 +4,19 @@ import { noise } from "@libp2p/noise";
 import { yamux } from "@chainsafe/libp2p-yamux";
 import { identify } from "@libp2p/identify";
 import { ping } from "@libp2p/ping";
-import { kadDHT, removePublicAddressesMapper } from "@libp2p/kad-dht";
+import { kadDHT } from "@libp2p/kad-dht";
 import { circuitRelayTransport } from "@libp2p/circuit-relay-v2";
 import { bootstrap } from "@libp2p/bootstrap";
 import { mdns } from "@libp2p/mdns";
 import { multiaddr } from "@multiformats/multiaddr";
 
 const dht = () => kadDHT({
-  protocol: "/computetorrent/lan/kad/1.0.0",
+  protocol: "/computetorrent/kad/1.0.0",
   clientMode: true,
-  peerInfoMapper: removePublicAddressesMapper,
 });
 
-export async function joinRelayNetwork(bootstrapAddress) {
-  const peerDiscovery = [mdns()];
+export async function joinRelayNetwork(bootstrapAddress, { discoverLan = true } = {}) {
+  const peerDiscovery = discoverLan ? [mdns()] : [];
   if (bootstrapAddress) {
     peerDiscovery.unshift(bootstrap({ list: [bootstrapAddress], tagName: "computetorrent-relay", tagValue: 100 }));
   }

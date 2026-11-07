@@ -23,6 +23,26 @@ def atomic(path, value):
 
 
 def execute(job, progress):
+    managers = []
+    try:
+        return _execute(job, progress, managers)
+    finally:
+        unique = {id(manager): manager for manager in managers}.values()
+        dhts = {}
+        for manager in unique:
+            dhts[id(manager.dht)] = manager.dht
+            try:
+                manager.shutdown()
+            except Exception:
+                pass
+        for dht in dhts.values():
+            try:
+                dht.shutdown()
+            except Exception:
+                pass
+
+
+def _execute(job, progress, managers):
     started = time.perf_counter()
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -46,7 +66,9 @@ def execute(job, progress):
         remote = remote.layers
     elif hasattr(model, "layers"):
         remote = model.layers
+    managers.append(remote.sequence_manager)
     stages = [remote[s["start"]:s["end"]] for s in job["plan"]]
+    managers.extend(stage.sequence_manager for stage in stages)
     deadline = time.monotonic() + 600
     while True:
         try:

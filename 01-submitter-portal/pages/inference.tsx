@@ -20,9 +20,9 @@ async function api(path: string, options?: RequestInit) {
   return body
 }
 
-const active = ['queued', 'resolving', 'loading', 'downloading_model', 'loading_reference', 'connecting_layers', 'running', 'verifying', 'canary', 'benchmarking']
+const active = ['queued', 'resolving', 'profiling_capacity', 'loading', 'downloading_model', 'loading_reference', 'connecting_layers', 'running', 'verifying', 'canary', 'benchmarking']
 const stageLabel = (status?: string) => ({
-  assigning: 'Assigning layers', sent: 'Starting provider', loading: 'Downloading model layers',
+  profiling_capacity: 'Measuring provider capacity', assigning: 'Assigning layers', sent: 'Starting provider', loading: 'Downloading model layers',
   serving: 'Serving layers', downloading_model: 'Downloading tokenizer/model metadata',
   connecting_layers: 'Connecting distributed layers', loading_reference: 'Downloading verifier checkpoint',
   running: 'Generating tokens', verifying: 'Verifying layer activations', canary: 'Running hidden canary',
@@ -447,6 +447,16 @@ export default function Inference() {
                           <span className={styles.stageNumber}>PEER {i + 1} · {stage.device?.toUpperCase()}</span>
                           <span className={styles.stageLayers}>Layers {stage.start}–{stage.end - 1}</span>
                           <span className={styles.stageNode}>{stage.node_id.slice(-12)}</span>
+                          {stage.capacity_layers != null && <span className={styles.stageNode}>
+                            {stage.end - stage.start} assigned · Capacity {stage.capacity_layers} layers
+                            {stage.allocation_basis === 'native_inference_rps'
+                              ? ` · Measured ${stage.allocation_weight} block/s`
+                              : ' · Memory estimate'}
+                          </span>}
+                          {(current.stage_status?.[stage.node_id]?.transport || stage.transport) &&
+                            <span className={styles.stageNode}>
+                              {(current.stage_status?.[stage.node_id]?.transport || stage.transport) === 'wss' ? 'WSS relay' : 'Direct LAN'}
+                            </span>}
                           <span style={{ fontSize: '10px', color: current.stage_status?.[stage.node_id]?.status === 'serving' ? '#34d399' : '#fbbf24' }}>
                             {stageLabel(current.stage_status?.[stage.node_id]?.status)}
                           </span>

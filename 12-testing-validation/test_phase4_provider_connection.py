@@ -6,7 +6,9 @@ import sys
 import threading
 from types import MethodType, SimpleNamespace
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, AsyncMock
+from unittest.mock import patch
+import hashlib
 from urllib.error import HTTPError, URLError
 
 from websockets.legacy.server import serve
@@ -14,6 +16,7 @@ from websockets.legacy.server import serve
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "08-provider-node/05-desktop-app-shell"))
 from production_seeder import ComputeTorrentSeeder, connection_failure, normalize_coordinator_address
+from connection_routes import proof, register_digest
 
 
 def fixture_app(url):
@@ -44,7 +47,8 @@ class OnboardingTests(unittest.TestCase):
         self.assertEqual(normalize_coordinator_address("localhost"), "ws://localhost:8001/ws/seeder")
         self.assertEqual(normalize_coordinator_address("192.168.0.5:9001"), "ws://192.168.0.5:9001/ws/seeder")
         self.assertEqual(normalize_coordinator_address("https://coord.example/"), "wss://coord.example/ws/seeder")
-        for value in ("", "http://coord.example", "wss://user@coord.example",
+        self.assertEqual(normalize_coordinator_address("http://coord.example"), "wss://coord.example/ws/seeder")
+        for value in ("", "wss://user@coord.example",
                       "https://coord.example/api", "https://coord.example?token=x"):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 normalize_coordinator_address(value)
@@ -80,6 +84,72 @@ class OnboardingTests(unittest.TestCase):
 
 
 class ConnectionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_capacity_result_releases_busy_state_before_reporting(self):
+        measurement = {"inference_rps": 7, "capacity_layers": 3}
+        app = SimpleNamespace(current_task=None, paused=False, petals_enabled=True,
+            petals=SimpleNamespace(measure_capacity=Mock(return_value=measurement)),
+            profile={}, cpu_limit=2, memory_limit_gb=4,
+            update_task_info=Mock(), update_status=Mock())
+        async def send(raw):
+            self.assertIsNone(app.current_task)
+            self.assertEqual(json.loads(raw)["measurement"], measurement)
+        app.websocket = SimpleNamespace(send=AsyncMock(side_effect=send))
+        await ComputeTorrentSeeder.handle_message(app, json.dumps(dict(type="petals_capacity", job_id="a"*32)))
+        app.websocket.send.assert_awaited_once()
+        self.assertEqual(app.profile["petals_capacity"], measurement)
+
+    async def test_alternate_endpoint_uses_challenge_without_sending_bearer(self):
+        registered = asyncio.Event()
+        key = hashlib.sha256(b"fixture-token").hexdigest()
+        async def coordinator(ws):
+            self.assertNotIn("Authorization", ws.request_headers)
+            hello = json.loads(await ws.recv())
+            self.assertEqual(hello["type"], "auth_challenge")
+            server_nonce = "b" * 64
+            await ws.send(json.dumps(dict(type="auth_challenge", nonce=server_nonce,
+                proof=proof(key, "ct-server-v1", hello["nonce"], server_nonce, "fixture-peer"))))
+            message = json.loads(await ws.recv())
+            self.assertEqual(message["proof"], proof(key, "ct-register-v1", hello["nonce"],
+                                                   server_nonce, register_digest(message)))
+            self.assertNotIn("fixture-token", json.dumps(message))
+            await ws.send(json.dumps(dict(type="register_ack", node_id="fixture-peer")))
+            registered.set()
+            await ws.wait_closed()
+        async with serve(coordinator, "127.0.0.1", 0) as server:
+            alternative = f"ws://127.0.0.1:{server.sockets[0].getsockname()[1]}/ws/seeder"
+            app = fixture_app("wss://fixture.invalid/ws/seeder")
+            app.settings = dict(candidate_origin=app.orchestrator_url, coordinator_candidates=[alternative])
+            with patch("production_seeder.select_endpoint", return_value=alternative):
+                task = asyncio.create_task(ComputeTorrentSeeder.connect_to_orchestrator(app))
+                try:
+                    await asyncio.wait_for(registered.wait(), 5)
+                    for _ in range(100):
+                        if app.is_connected:
+                            break
+                        await asyncio.sleep(.01)
+                    self.assertTrue(app.is_connected)
+                    self.assertEqual(app.active_coordinator_url, alternative)
+                    self.assertEqual(app.node_id, "fixture-peer")
+                finally:
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+
+    async def test_revoked_credential_does_not_automatically_reenroll(self):
+        async def coordinator(ws):
+            await ws.recv()
+            await ws.close(code=1008, reason="Provider enrollment is invalid or revoked")
+
+        async with serve(coordinator, "127.0.0.1", 0) as server:
+            app = fixture_app(f"ws://127.0.0.1:{server.sockets[0].getsockname()[1]}/ws/seeder")
+            app.enroll_provider = Mock(side_effect=AssertionError("must not reenroll"))
+            await asyncio.wait_for(ComputeTorrentSeeder.connect_to_orchestrator(app), 5)
+            app.enroll_provider.assert_not_called()
+            self.assertEqual(app.node_id, "fixture-peer")
+            self.assertEqual(app.access_token, "fixture-token")
+            self.assertFalse(app.is_connected)
+            self.assertNotIn("Registered", app.states)
+            self.assertEqual(app.states[-1], "Error")
+
     async def test_acknowledgment_gates_connected_state_and_reconnects(self):
         first_registration = asyncio.Event()
         allow_ack = asyncio.Event()

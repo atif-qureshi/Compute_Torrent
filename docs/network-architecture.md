@@ -53,3 +53,7 @@ docker run --rm --network none --cpus 2 --memory 3g `
 4. Use matching model/revision, device limits, prompt/context, verification policy and cache state across runs. Measure attempts and successes, connect time, transport RTT, steady throughput, bytes on the wire, activation transfer latency, first token and total duration, tokens/sec, reconnect time and failures. Record sample count and network conditions for each direct, native and custom route.
 
 The standalone `backend/app/main.py` still fails Python parsing at the block near lines 1003–1004. The canonical coordinator is `orchestrator/app/main_production.py`, so the standalone issue does not block this isolated harness or the canonical integration plan. No change was made to that backend.
+
+## Follow-up
+
+The gateway/worker/scheduler integration and isolated native multi-worker inference have now been exercised; see [integrated Petals transport](petals-relay-integration.md) for current code, results and remaining physical-network gates. The prototype-only description above is historical evidence for the earlier checkpoint.
