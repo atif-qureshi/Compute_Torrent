@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from 'react'
-import Head from 'next/head'
-import styles from '../styles/Home.module.css'
-import PortalNav from '../components/PortalNav'
+import React, { useCallback, useEffect, useState } from 'react'
+import AppLayout from '../components/AppLayout'
+import StatCard from '../components/StatCard'
+import StatusBadge from '../components/StatusBadge'
+import DiagnosticBanner from '../components/DiagnosticBanner'
 
 const API = '/api/ct'
 const ACCOUNT = 'web-portal'
@@ -17,9 +18,9 @@ async function responseJson(response: Response) {
 }
 
 function timeAgo(value?: string) {
-  if (!value) return 'Last seen unknown'
+  if (!value) return 'Just now'
   const timestamp = new Date(value).getTime()
-  if (!Number.isFinite(timestamp)) return 'Last seen unknown'
+  if (!Number.isFinite(timestamp)) return 'Just now'
   const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000))
   if (seconds < 60) return 'Just now'
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`
@@ -31,57 +32,47 @@ export default function Home() {
   const [tasks, setTasks] = useState<any[]>([])
   const [seeders, setSeeders] = useState<any[]>([])
   const [credits, setCredits] = useState<any>(null)
-  const [network, setNetwork] = useState<any>(null)
   const [health, setHealth] = useState<any>(null)
-  const [taskFilter, setTaskFilter] = useState('all')
+  const [distStatus, setDistStatus] = useState<any>(null)
   const [errorMessage, setErrorMessage] = useState('')
-  const [providerAddress, setProviderAddress] = useState('ws://127.0.0.1:8001/ws/seeder')
+  const [isRefreshing, setIsRefreshing] = useState(false)
   const [lanAddress, setLanAddress] = useState('ws://192.168.100.7:8001/ws/seeder')
   const [publicAddress, setPublicAddress] = useState<string | null>(null)
-  const [copiedLan, setCopiedLan] = useState(false)
-  const [copiedPublic, setCopiedPublic] = useState(false)
   const [enrollmentToken, setEnrollmentToken] = useState('')
   const [copiedToken, setCopiedToken] = useState(false)
-  const [isRefreshing, setIsRefreshing] = useState(false)
+  const [copiedLan, setCopiedLan] = useState(false)
 
   useEffect(() => {
-    const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws'
-    const fallback = `${scheme}://${window.location.hostname}:8001/ws/seeder`
     fetch('/api/provider-address')
       .then(responseJson)
       .then((data) => {
-        if (data.address) setProviderAddress(data.address)
-        else setProviderAddress(fallback)
         if (data.lan_address) setLanAddress(data.lan_address)
         setPublicAddress(data.public_address || null)
         setEnrollmentToken(data.enrollment_token || '')
       })
-      .catch(() => setProviderAddress(fallback))
+      .catch(() => {})
   }, [])
 
   const refresh = useCallback(async () => {
     setIsRefreshing(true)
     try {
-      const [tasksRes, seedersRes, creditsRes] = await Promise.all([
-        fetch(`${API}/tasks?limit=12&submitter_id=${ACCOUNT}`),
-        fetch(`${API}/seeders`),
-        fetch(`${API}/credits?submitter_id=${ACCOUNT}`),
-      ])
-      const [taskData, seederData, creditData] = await Promise.all([
-        responseJson(tasksRes), responseJson(seedersRes), responseJson(creditsRes),
-      ])
-      const [healthResult, networkResult] = await Promise.allSettled([
+      const [tasksRes, seedersRes, creditsRes, healthRes, distRes] = await Promise.allSettled([
+        fetch(`${API}/tasks?limit=10&submitter_id=${ACCOUNT}`).then(responseJson),
+        fetch(`${API}/seeders`).then(responseJson),
+        fetch(`${API}/credits?submitter_id=${ACCOUNT}`).then(responseJson),
         fetch(`${API}/health`).then(responseJson),
-        fetch(`${API}/network`).then(responseJson),
+        fetch(`${API}/distributed/status`).then(responseJson),
       ])
-      setHealth(healthResult.status === 'fulfilled' ? healthResult.value : { status: 'unavailable' })
-      setNetwork(networkResult.status === 'fulfilled' ? networkResult.value : { status: 'unavailable', connected_peer_count: 0 })
-      setTasks(taskData)
-      setSeeders(seederData)
-      setCredits(creditData)
+
+      if (tasksRes.status === 'fulfilled') setTasks(tasksRes.value || [])
+      if (seedersRes.status === 'fulfilled') setSeeders(seedersRes.value || [])
+      if (creditsRes.status === 'fulfilled') setCredits(creditsRes.value)
+      if (healthRes.status === 'fulfilled') setHealth(healthRes.value)
+      if (distRes.status === 'fulfilled') setDistStatus(distRes.value)
+
       setErrorMessage('')
     } catch (error: any) {
-      setErrorMessage(error.message || 'Coordinator is unavailable')
+      setErrorMessage(error.message || 'Coordinator connection error')
     } finally {
       setIsRefreshing(false)
     }
@@ -93,386 +84,605 @@ export default function Home() {
     return () => clearInterval(timer)
   }, [refresh])
 
-  const onlineSeeders = seeders.filter((node) => (typeof node.control_age_seconds === 'number' || ['online', 'idle', 'busy', 'paused'].includes(node.state || node.status)))
-  const visibleTasks = taskFilter === 'all' ? tasks : tasks.filter((task) => task.status === taskFilter)
-  const coordinatorOnline = health?.status === 'healthy'
+  const onlineSeeders = seeders.filter((node) => (
+    typeof node.control_age_seconds === 'number' ||
+    ['online', 'idle', 'busy', 'paused'].includes(node.state || node.status)
+  ))
 
-  const revokeProvider = async (nodeId: string) => {
-    if (!window.confirm(`Revoke credentials for ${nodeId}? This machine will need the join token to reconnect.`)) return
-    try {
-      const result = await responseJson(await fetch(`${API}/seeders/${encodeURIComponent(nodeId)}/credential`, { method: 'DELETE' }))
-      if (result.status === 'revoked') await refresh()
-    } catch (error: any) {
-      setErrorMessage(error.message || 'Could not revoke provider')
-    }
-  }
+  const readyProviders = distStatus?.providers?.filter((p: any) => p.layer_ready) || []
+  const isHealthy = health?.status === 'healthy'
+  const isDhtReady = distStatus?.status === 'ready'
 
-  const copyWs = () => {
-    navigator.clipboard.writeText(publicAddress || lanAddress)
-    setCopiedLan(true)
-    setTimeout(() => setCopiedLan(false), 2200)
-  }
+  // Calculate cluster aggregate resources
+  const totalCores = seeders.reduce((acc, s) => acc + (s.profile?.cpu_cores || s.profile?.physical_cores || 0), 0)
+  const totalRamGb = seeders.reduce((acc, s) => acc + (Number(s.profile?.RAM) || 0), 0)
+  const gpuCount = seeders.filter((s) => s.profile?.GPU && !s.profile.GPU.toLowerCase().includes('none')).length
 
   return (
-    <div className={styles.container}>
-      <Head>
-        <title>Cluster Nodes & Overview | ComputeTorrent</title>
-        <meta name="description" content="ComputeTorrent distributed cluster management dashboard." />
-      </Head>
+    <AppLayout
+      title="Cluster Overview"
+      subtitle="Real-time telemetry, provider node availability, and distributed model compute health."
+      actions={
+        <div style={{ display: 'flex', gap: '8px' }}>
+          <button
+            onClick={refresh}
+            style={{
+              padding: '6px 12px',
+              backgroundColor: 'rgba(255, 255, 255, 0.05)',
+              border: '1px solid rgba(255, 255, 255, 0.1)',
+              borderRadius: '6px',
+              fontSize: '12px',
+              color: '#cbd5e1',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+            }}
+          >
+            <span>{isRefreshing ? '🔄' : '↻'}</span>
+            <span>{isRefreshing ? 'Refreshing…' : 'Refresh'}</span>
+          </button>
+          <a
+            href="/inference"
+            style={{
+              padding: '6px 14px',
+              backgroundColor: '#3b82f6',
+              color: '#ffffff',
+              borderRadius: '6px',
+              fontSize: '12px',
+              fontWeight: 600,
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+            }}
+          >
+            <span>🧠</span>
+            <span>Deploy Model →</span>
+          </a>
+        </div>
+      }
+    >
+      {/* Actionable Error Banner if any */}
+      {errorMessage && (
+        <DiagnosticBanner
+          error={errorMessage}
+          onDismiss={() => setErrorMessage('')}
+          onRetry={refresh}
+        />
+      )}
 
-      <main className={styles.main}>
-        <PortalNav />
-
-        {/* Hero Header */}
-        <header className={styles.header}>
-          <div>
-            <div className={styles.eyebrow}>COMPUTETORRENT CLUSTER</div>
-            <h1 className={styles.title}>
-              Cluster Nodes & <span className={styles.titleGradient}>Resources</span>
-            </h1>
-            <p className={styles.description}>
-              Monitor enrolled provider machines, distribute LLM inference workloads, and track verified task commitments across your private network.
-            </p>
-          </div>
-          <div style={{ display: 'flex', gap: '10px' }}>
-            <button className={styles.actionButton} onClick={refresh}>
-              {isRefreshing ? '🔄 Refreshing…' : '🔄 Refresh Status'}
-            </button>
-            <a href="/inference" className={`${styles.actionButton} ${styles.actionPrimary}`}>
-              🧠 Open Model Studio →
-            </a>
-          </div>
-        </header>
-
-        {errorMessage && (
-          <div className={styles.errorBanner}>
-            <span>⚠️ {errorMessage}</span>
-            <button className={styles.actionButton} onClick={() => { setErrorMessage(''); refresh() }}>Dismiss</button>
-          </div>
-        )}
-
-        {/* 4 Multi-Accent Metric Cards */}
-        <section className={styles.statsGrid}>
-          <div className={`${styles.statCard} ${styles.cardEmerald}`}>
-            <div className={styles.cardHeader}>
-              <span>Active Nodes</span>
-              <div className={styles.statIcon}>🖥️</div>
-            </div>
-            <strong>{onlineSeeders.length} <small style={{ fontSize: '14px', color: '#94a3b8' }}>/ {seeders.length} enrolled</small></strong>
-            <small>{onlineSeeders.length >= 2 ? 'Cluster ready for distributed tasks' : 'Connect client PCs to scale'}</small>
-          </div>
-
-          <div className={`${styles.statCard} ${styles.cardCyan}`}>
-            <div className={styles.cardHeader}>
-              <span>Coordinator Status</span>
-              <div className={styles.statIcon}>🌐</div>
-            </div>
-            <strong>{coordinatorOnline ? 'HEALTHY' : 'CHECKING'}</strong>
-            <small>{coordinatorOnline ? 'REST API & WebSockets operational' : 'Attempting to ping service'}</small>
-          </div>
-
-          <div className={`${styles.statCard} ${styles.cardViolet}`}>
-            <div className={styles.cardHeader}>
-              <span>Total Tasks</span>
-              <div className={styles.statIcon}>⚡</div>
-            </div>
-            <strong>{tasks.length}</strong>
-            <small>Processed through replica consensus</small>
-          </div>
-
-          <div className={`${styles.statCard} ${styles.cardAmber}`}>
-            <div className={styles.cardHeader}>
-              <span>Demo Credits Balance</span>
-              <div className={styles.statIcon}>💳</div>
-            </div>
-            <strong>{credits?.balance ?? '—'}</strong>
-            <small>Demonstration rewards ledger</small>
-          </div>
-        </section>
-
-        {/* Main Grid: Left: Node List, Right: Quick Connect & Recent Tasks */}
-        <div className={styles.workspaceGrid}>
-          {/* Left Column: Enrolled Compute Nodes */}
-          <section className={styles.card}>
-            <div className={styles.sectionHeading}>
-              <div>
-                <span className={styles.eyebrow}>HARDWARE INVENTORY</span>
-                <h2>Enrolled Provider Computers</h2>
-              </div>
-              <span className={styles.clusterPill}>
-                <span className={styles.dotGreen}></span>
-                <span>{onlineSeeders.length} Active Now</span>
+      {/* Top 4 KPI Metrics */}
+      <section
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+          gap: '16px',
+          marginBottom: '24px',
+        }}
+      >
+        <StatCard
+          label="Active Providers"
+          value={
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: '6px' }}>
+              <span>{onlineSeeders.length}</span>
+              <span style={{ fontSize: '14px', color: '#64748b', fontWeight: 500 }}>
+                / {seeders.length} Enrolled
               </span>
             </div>
+          }
+          subtext={
+            readyProviders.length >= 2
+              ? '✨ Cluster primed for multi-peer layer slicing'
+              : 'Requires at least 2 layer-ready peers'
+          }
+          icon="🖥️"
+          statusColor={onlineSeeders.length >= 2 ? 'emerald' : onlineSeeders.length > 0 ? 'amber' : 'rose'}
+        />
 
-            {!seeders.length ? (
-              <div className={styles.emptyState}>
-                <p>No provider PCs enrolled yet.</p>
-                <small style={{ color: '#64748b', display: 'block', marginTop: '6px' }}>
-                  Run the provider desktop app on client machines using the WebSocket address shown on the right.
-                </small>
-              </div>
-            ) : (
-              <div className={styles.workerList}>
-                {seeders.map((node) => {
-                  const isOnline = (typeof node.control_age_seconds === 'number' || ['online', 'idle', 'busy', 'paused'].includes(node.state || node.status))
-                  const profile = node.profile || {}
-                  return (
-                    <article className={styles.nodeCard} key={node.node_id}>
-                      <div className={styles.nodeCardHeader}>
-                        <div className={styles.nodeIdentity}>
-                          <div className={styles.nodeIconWrapper}>
-                            {profile.GPU ? '🎮' : '💻'}
-                          </div>
-                          <div className={styles.nodeTitleBlock}>
-                            <span className={styles.nodeName}>
-                              {profile.cpu_model || `Node ${node.node_id.slice(-10)}`}
-                            </span>
-                            <span className={styles.nodeSub}>
-                              ID: {node.node_id} · {timeAgo(node.last_seen_at || node.updated_at)}
-                            </span>
-                          </div>
-                        </div>
-
-                        <span className={`${styles.statusPill} ${isOnline ? (node.state === 'busy' ? styles.statusBusy : styles.statusOnline) : styles.statusOffline}`}>
-                          {node.state || node.status || 'offline'}
-                        </span>
-                      </div>
-
-                      {typeof node.control_age_seconds === 'number' && (
-                        <small>Control heartbeat {Math.round(node.control_age_seconds)}s ago</small>
-                      )}
-
-                      {/* Specs Badge Grid */}
-                      <div className={styles.nodeSpecGrid}>
-                        <div className={styles.specBadge}>
-                          <span className={styles.specLabel}>CPU Cores</span>
-                          <span className={styles.specValue}>{profile.cpu_cores || '—'} Logical</span>
-                        </div>
-                        <div className={styles.specBadge}>
-                          <span className={styles.specLabel}>System RAM</span>
-                          <span className={styles.specValue}>{profile.RAM || '—'} GB</span>
-                        </div>
-                        <div className={styles.specBadge}>
-                          <span className={styles.specLabel}>GPU Device</span>
-                          <span className={styles.specValue} title={profile.GPU || 'None'}>
-                            {profile.GPU ? (profile.GPU.length > 18 ? profile.GPU.slice(0, 16) + '…' : profile.GPU) : 'CPU Only'}
-                          </span>
-                        </div>
-                        <div className={styles.specBadge}>
-                          <span className={styles.specLabel}>Docker SDK</span>
-                          <span className={styles.specValue}>{profile.docker_ok ? '✅ Ready' : '❌ Missing'}</span>
-                        </div>
-                      </div>
-
-                      <div className={styles.nodeFooter}>
-                        <span style={{ fontSize: '11px', color: '#64748b' }}>
-                          Petals Protocol: <b>v{profile.petals_protocol_version || '1'}</b> · Tier {node.tier || profile.tier || 2}
-                        </span>
-                        <button
-                          type="button"
-                          className={styles.revokeButton}
-                          onClick={() => revokeProvider(node.node_id)}
-                          title="Revoke client authentication key"
-                        >
-                          Revoke Access
-                        </button>
-                      </div>
-                    </article>
-                  )
-                })}
-              </div>
-            )}
-          </section>
-
-          {/* Right Column: Connection Helper & Activity */}
-          <div className={styles.sideColumn}>
-            {/* Quick Connect Card */}
-            <div className={styles.networkCard}>
-              <div className={styles.sectionHeading} style={{ border: 'none', padding: 0 }}>
-                <div>
-                  <span className={styles.eyebrow}>CLIENT SETUP & TUNNEL</span>
-                  <h2 style={{ fontSize: '17px' }}>Provider Connection URLs</h2>
-                </div>
-              </div>
-
-              {publicAddress ? (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span style={{ fontSize: '11px', fontWeight: 700, color: '#38bdf8' }}>🌐 GLOBAL REMOTE (NGROK TUNNEL)</span>
-                    <span style={{ fontSize: '10px', color: '#34d399', fontWeight: 600 }}>Active Online</span>
-                  </div>
-                  <div className={styles.networkAddressRow} style={{ borderColor: 'rgba(6, 182, 212, 0.4)' }}>
-                    <code>{publicAddress}</code>
-                    <button
-                      type="button"
-                      className={styles.copyAddressBtn}
-                      onClick={() => {
-                        navigator.clipboard.writeText(publicAddress)
-                        setCopiedPublic(true)
-                        setTimeout(() => setCopiedPublic(false), 2200)
-                      }}
-                    >
-                      {copiedPublic ? '✅ Copied' : '📋 Copy'}
-                    </button>
-                  </div>
-                  <small style={{ color: '#94a3b8', fontSize: '11px' }}>
-                    Use this URL for peers anywhere in the world across the internet.
-                  </small>
-                </div>
-              ) : (
-                <div style={{ background: 'rgba(99, 102, 241, 0.08)', border: '1px dashed rgba(99, 102, 241, 0.3)', borderRadius: '10px', padding: '12px' }}>
-                  <span style={{ fontSize: '12px', fontWeight: 700, color: '#a5b4fc', display: 'block' }}>
-                    🌐 Want remote peers from other locations to join?
-                  </span>
-                  <p style={{ margin: '4px 0 8px', fontSize: '11px', color: '#94a3b8', lineHeight: '1.5' }}>
-                    Run <code>.\start-ngrok.ps1</code> on this coordinator to create an instant public tunnel URL.
-                  </p>
-                </div>
-              )}
-
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '6px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span style={{ fontSize: '11px', fontWeight: 700, color: '#818cf8' }}>🏠 LOCAL NETWORK (WI-FI LAN)</span>
-                  <span style={{ fontSize: '10px', color: '#34d399', fontWeight: 600 }}>Active Online</span>
-                </div>
-                <div className={styles.networkAddressRow}>
-                  <code>{lanAddress}</code>
-                  <button
-                    type="button"
-                    className={styles.copyAddressBtn}
-                    onClick={() => {
-                      navigator.clipboard.writeText(lanAddress)
-                      setCopiedLan(true)
-                      setTimeout(() => setCopiedLan(false), 2200)
-                    }}
-                  >
-                    {copiedLan ? '✅ Copied' : '📋 Copy'}
-                  </button>
-                </div>
-                <small style={{ color: '#64748b', fontSize: '11px' }}>
-                  Use this URL for PCs connected to the same local Wi-Fi router.
-                </small>
-              </div>
-
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '12px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span style={{ fontSize: '11px', fontWeight: 700, color: '#f59e0b' }}>🔑 PROVIDER JOIN CODE</span>
-                  <span style={{ fontSize: '10px', color: '#34d399', fontWeight: 600 }}>Required for Clients</span>
-                </div>
-                <div className={styles.networkAddressRow} style={{ borderColor: 'rgba(245, 158, 11, 0.4)' }}>
-                  <code style={{ color: '#fde68a' }}>{enrollmentToken || 'Enrollment unavailable'}</code>
-                  <button
-                    type="button"
-                    className={styles.copyAddressBtn}
-                    onClick={() => {
-                      if (!enrollmentToken) return
-                      navigator.clipboard.writeText(enrollmentToken)
-                      setCopiedToken(true)
-                      setTimeout(() => setCopiedToken(false), 2200)
-                    }}
-                  >
-                    {copiedToken ? '✅ Copied' : '📋 Copy'}
-                  </button>
-                </div>
-                <small style={{ color: '#64748b', fontSize: '11px' }}>
-                  Send this join code to volunteer peers so their app can enroll with your network.
-                </small>
-              </div>
-
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '14px', paddingTop: '12px', borderTop: '1px solid rgba(255, 255, 255, 0.08)' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span style={{ fontSize: '11px', fontWeight: 700, color: '#c084fc' }}>📦 VOLUNTEER CLIENT APP</span>
-                  <span style={{ fontSize: '10px', color: '#38bdf8', fontWeight: 600 }}>Windows .exe</span>
-                </div>
-                <small style={{ color: '#64748b', fontSize: '11px' }}>
-                  Ask your operator for the approved Windows installer.
-                </small>
-              </div>
+        <StatCard
+          label="Petals DHT Gateway"
+          value={
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <span style={{ textTransform: 'uppercase' }}>{isDhtReady ? 'Ready' : distStatus?.status || 'Offline'}</span>
+              <StatusBadge status={isDhtReady ? 'ready' : 'checking'} size="sm" showDot={true} />
             </div>
+          }
+          subtext="Distributed hash table layer coordination"
+          icon="🌐"
+          statusColor={isDhtReady ? 'emerald' : 'amber'}
+        />
 
-            {/* Quick Navigation Card */}
-            <div className={styles.card}>
-              <div className={styles.sectionHeading}>
-                <h2>Workspace Navigation</h2>
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                <a href="/inference" className={styles.actionButton} style={{ justifyContent: 'space-between', padding: '12px 16px' }}>
-                  <span>🧠 <b>Model Studio</b> (Distributed LLM)</span>
-                  <span>→</span>
-                </a>
-                <a href="/history" className={styles.actionButton} style={{ justifyContent: 'space-between', padding: '12px 16px' }}>
-                  <span>📜 <b>Task History & Audit</b></span>
-                  <span>→</span>
-                </a>
-                <a href="/credits" className={styles.actionButton} style={{ justifyContent: 'space-between', padding: '12px 16px' }}>
-                  <span>💳 <b>Demo Credits Ledger</b></span>
-                  <span>→</span>
-                </a>
-              </div>
+        <StatCard
+          label="Total Task Executions"
+          value={tasks.length}
+          subtext="Executed across distributed provider nodes"
+          icon="⚡"
+          statusColor="blue"
+        />
+
+        <StatCard
+          label="Demo Credits Balance"
+          value={credits ? `${credits.balance}` : '—'}
+          subtext="Incentive test accounting ledger"
+          icon="💳"
+          statusColor="purple"
+        />
+      </section>
+
+      {/* Cluster Hardware Capacity Strip */}
+      <section
+        style={{
+          backgroundColor: '#0f172a',
+          border: '1px solid rgba(255, 255, 255, 0.08)',
+          borderRadius: '10px',
+          padding: '16px 20px',
+          marginBottom: '24px',
+          display: 'flex',
+          flexWrap: 'wrap',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: '16px',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <div
+            style={{
+              width: '40px',
+              height: '40px',
+              borderRadius: '8px',
+              backgroundColor: 'rgba(59, 130, 246, 0.1)',
+              border: '1px solid rgba(59, 130, 246, 0.2)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontSize: '20px',
+            }}
+          >
+            ⚡
+          </div>
+          <div>
+            <div style={{ fontSize: '14px', fontWeight: 600, color: '#f8fafc' }}>
+              Aggregated Cluster Compute Capacity
+            </div>
+            <div style={{ fontSize: '12px', color: '#94a3b8' }}>
+              Hardware detected across online volunteer machines
             </div>
           </div>
         </div>
 
-        {/* Bottom Section: Recent Task Submissions */}
-        <section className={styles.card}>
-          <div className={styles.sectionHeading}>
-            <div>
-              <span className={styles.eyebrow}>AUDIT TRAILS</span>
-              <h2>Recent Task Executions</h2>
-            </div>
-            <select
-              className={styles.filterSelect}
-              value={taskFilter}
-              onChange={(e) => setTaskFilter(e.target.value)}
-            >
-              <option value="all">All Statuses ({tasks.length})</option>
-              <option value="pending">Pending</option>
-              <option value="allocated">Assigned</option>
-              <option value="running">Running</option>
-              <option value="completed">Completed</option>
-              <option value="failed">Failed</option>
-            </select>
+        <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap' }}>
+          <div>
+            <span style={{ fontSize: '11px', color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.04em', display: 'block' }}>
+              Logical Cores
+            </span>
+            <span style={{ fontSize: '16px', fontWeight: 700, color: '#f8fafc' }}>
+              {totalCores || '—'} Cores
+            </span>
           </div>
 
-          {!visibleTasks.length ? (
-            <div className={styles.emptyState}>
-              <p>No tasks found matching this criteria.</p>
+          <div style={{ borderLeft: '1px solid rgba(255, 255, 255, 0.08)', paddingLeft: '24px' }}>
+            <span style={{ fontSize: '11px', color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.04em', display: 'block' }}>
+              Total System RAM
+            </span>
+            <span style={{ fontSize: '16px', fontWeight: 700, color: '#f8fafc' }}>
+              {totalRamGb ? `${totalRamGb.toFixed(0)} GB` : '—'}
+            </span>
+          </div>
+
+          <div style={{ borderLeft: '1px solid rgba(255, 255, 255, 0.08)', paddingLeft: '24px' }}>
+            <span style={{ fontSize: '11px', color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.04em', display: 'block' }}>
+              GPU Accelerators
+            </span>
+            <span style={{ fontSize: '16px', fontWeight: 700, color: '#f8fafc' }}>
+              {gpuCount} Detected
+            </span>
+          </div>
+
+          <div style={{ borderLeft: '1px solid rgba(255, 255, 255, 0.08)', paddingLeft: '24px' }}>
+            <span style={{ fontSize: '11px', color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.04em', display: 'block' }}>
+              Coordinator Health
+            </span>
+            <div style={{ marginTop: '2px' }}>
+              <StatusBadge status={isHealthy ? 'healthy' : 'checking'} size="sm" />
             </div>
-          ) : (
-            <div className={styles.taskTable}>
-              <div className={styles.taskTableHeader}>
-                <span>Task ID</span>
-                <span>Model Name</span>
-                <span>Status</span>
-                <span>Mode</span>
-                <span>Created At</span>
-                <span>Action</span>
+          </div>
+        </div>
+      </section>
+
+      {/* Main 2-Column Grid */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: '24px', marginBottom: '24px' }}>
+        {/* Left Column: Live Provider Nodes Table */}
+        <section
+          style={{
+            backgroundColor: '#0f172a',
+            border: '1px solid rgba(255, 255, 255, 0.08)',
+            borderRadius: '10px',
+            padding: '20px',
+            display: 'flex',
+            flexDirection: 'column',
+            justifyContent: 'space-between',
+          }}
+        >
+          <div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+              <div>
+                <h2 style={{ fontSize: '15px', fontWeight: 600, color: '#f8fafc', margin: 0 }}>
+                  Enrolled Provider Machines
+                </h2>
+                <p style={{ fontSize: '12px', color: '#64748b', margin: '2px 0 0' }}>
+                  Machines registered to accept distributed model layer partitions.
+                </p>
               </div>
-              {visibleTasks.map((task) => (
-                <div className={styles.taskRow} key={task.task_id}>
-                  <span className={styles.taskId}>{task.task_id.slice(0, 16)}…</span>
-                  <span style={{ fontWeight: 600, color: '#f8fafc' }}>{task.model_name}</span>
-                  <div>
-                    <span className={`${styles.statusPill} ${styles[`status_${task.status}`] || ''}`}>
-                      {task.status}
-                    </span>
-                  </div>
-                  <span style={{ color: '#94a3b8' }}>{task.mode || 'WS-RR'}</span>
-                  <span style={{ color: '#64748b' }}>{new Date(task.created_at).toLocaleTimeString()}</span>
-                  <a href={`/history?task_id=${encodeURIComponent(task.task_id)}`} className={styles.actionButton}>
-                    Inspect Details →
-                  </a>
-                </div>
-              ))}
+              <a
+                href="/nodes"
+                style={{ fontSize: '12px', color: '#60a5fa', fontWeight: 500 }}
+              >
+                Manage Nodes ({seeders.length}) →
+              </a>
             </div>
-          )}
+
+            {seeders.length === 0 ? (
+              <div
+                style={{
+                  padding: '36px',
+                  textAlign: 'center',
+                  backgroundColor: '#090d16',
+                  borderRadius: '8px',
+                  border: '1px dashed rgba(255, 255, 255, 0.1)',
+                }}
+              >
+                <div style={{ fontSize: '24px', marginBottom: '8px' }}>💻</div>
+                <div style={{ fontSize: '14px', fontWeight: 500, color: '#f8fafc' }}>
+                  No provider computers enrolled yet
+                </div>
+                <p style={{ fontSize: '12px', color: '#64748b', margin: '4px 0 16px' }}>
+                  Launch the provider desktop client on a volunteer PC with the join code on the right.
+                </p>
+              </div>
+            ) : (
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '12px' }}>
+                  <thead>
+                    <tr style={{ borderBottom: '1px solid rgba(255, 255, 255, 0.08)', color: '#64748b' }}>
+                      <th style={{ padding: '8px 10px', fontWeight: 600 }}>Node ID</th>
+                      <th style={{ padding: '8px 10px', fontWeight: 600 }}>Hardware Specs</th>
+                      <th style={{ padding: '8px 10px', fontWeight: 600 }}>Status</th>
+                      <th style={{ padding: '8px 10px', fontWeight: 600 }}>Layer Ready</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {seeders.slice(0, 5).map((node) => {
+                      const isOnline = (
+                        typeof node.control_age_seconds === 'number' ||
+                        ['online', 'idle', 'busy', 'paused'].includes(node.state || node.status)
+                      )
+                      const prof = node.profile || {}
+                      const distPeer = distStatus?.providers?.find((p: any) => p.node_id === node.node_id)
+                      const isReady = distPeer ? distPeer.layer_ready : prof.docker_ok
+
+                      return (
+                        <tr
+                          key={node.node_id}
+                          style={{
+                            borderBottom: '1px solid rgba(255, 255, 255, 0.04)',
+                            transition: 'background-color 0.1s ease',
+                          }}
+                        >
+                          <td style={{ padding: '10px', fontFamily: 'var(--font-mono)', color: '#cbd5e1' }}>
+                            {node.node_id.slice(-10)}
+                          </td>
+                          <td style={{ padding: '10px' }}>
+                            <div style={{ fontWeight: 500, color: '#f8fafc' }}>
+                              {prof.cpu_model || 'Standard CPU'}
+                            </div>
+                            <div style={{ fontSize: '11px', color: '#64748b' }}>
+                              {prof.RAM || '—'} GB RAM · {prof.GPU || 'Integrated Graphics'}
+                            </div>
+                          </td>
+                          <td style={{ padding: '10px' }}>
+                            <StatusBadge
+                              status={isOnline ? (node.state || 'online') : 'offline'}
+                              size="sm"
+                            />
+                          </td>
+                          <td style={{ padding: '10px' }}>
+                            <span
+                              style={{
+                                fontSize: '11px',
+                                color: isReady ? '#34d399' : '#fbbf24',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '4px',
+                              }}
+                            >
+                              {isReady ? '✅ Ready' : '⚠️ Pending'}
+                            </span>
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
         </section>
 
-        <footer style={{ textAlign: 'center', color: '#64748b', fontSize: '12px', padding: '16px 0' }}>
-          ComputeTorrent Platform · Multi-PC Volunteer LLM Infrastructure
-        </footer>
-      </main>
-    </div>
+        {/* Right Column: Connection Helper & Supported Models */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+          {/* Quick Connect Credentials Card */}
+          <section
+            style={{
+              backgroundColor: '#0f172a',
+              border: '1px solid rgba(255, 255, 255, 0.08)',
+              borderRadius: '10px',
+              padding: '20px',
+            }}
+          >
+            <div style={{ marginBottom: '14px' }}>
+              <h2 style={{ fontSize: '14px', fontWeight: 600, color: '#f8fafc', margin: 0 }}>
+                🔑 Provider Connection Credentials
+              </h2>
+              <p style={{ fontSize: '12px', color: '#64748b', margin: '2px 0 0' }}>
+                Required to enroll client machines on your local network.
+              </p>
+            </div>
+
+            {/* Join Code */}
+            <div style={{ marginBottom: '12px' }}>
+              <label style={{ fontSize: '11px', color: '#94a3b8', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em', display: 'block', marginBottom: '4px' }}>
+                Provider Join Token
+              </label>
+              <div style={{ display: 'flex', gap: '6px' }}>
+                <input
+                  type="text"
+                  readOnly
+                  value={enrollmentToken || 'Unavailable'}
+                  style={{ flex: 1, fontFamily: 'var(--font-mono)', fontSize: '12px', color: '#fbbf24', backgroundColor: '#090d16' }}
+                />
+                <button
+                  onClick={() => {
+                    if (!enrollmentToken) return
+                    navigator.clipboard.writeText(enrollmentToken)
+                    setCopiedToken(true)
+                    setTimeout(() => setCopiedToken(false), 2000)
+                  }}
+                  style={{
+                    padding: '6px 12px',
+                    backgroundColor: '#3b82f6',
+                    color: '#ffffff',
+                    borderRadius: '6px',
+                    fontSize: '11px',
+                    fontWeight: 600,
+                  }}
+                >
+                  {copiedToken ? '✅' : 'Copy'}
+                </button>
+              </div>
+            </div>
+
+            {/* LAN Address */}
+            <div>
+              <label style={{ fontSize: '11px', color: '#94a3b8', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em', display: 'block', marginBottom: '4px' }}>
+                Coordinator LAN WebSocket URL
+              </label>
+              <div style={{ display: 'flex', gap: '6px' }}>
+                <input
+                  type="text"
+                  readOnly
+                  value={publicAddress || lanAddress}
+                  style={{ flex: 1, fontFamily: 'var(--font-mono)', fontSize: '12px', color: '#60a5fa', backgroundColor: '#090d16' }}
+                />
+                <button
+                  onClick={() => {
+                    navigator.clipboard.writeText(publicAddress || lanAddress)
+                    setCopiedLan(true)
+                    setTimeout(() => setCopiedLan(false), 2000)
+                  }}
+                  style={{
+                    padding: '6px 12px',
+                    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+                    color: '#f8fafc',
+                    border: '1px solid rgba(255, 255, 255, 0.15)',
+                    borderRadius: '6px',
+                    fontSize: '11px',
+                  }}
+                >
+                  {copiedLan ? '✅' : 'Copy'}
+                </button>
+              </div>
+            </div>
+          </section>
+
+          {/* Model Catalog Quick Launch Card */}
+          <section
+            style={{
+              backgroundColor: '#0f172a',
+              border: '1px solid rgba(255, 255, 255, 0.08)',
+              borderRadius: '10px',
+              padding: '20px',
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+              <div>
+                <h2 style={{ fontSize: '14px', fontWeight: 600, color: '#f8fafc', margin: 0 }}>
+                  🧠 Supported Model Catalog
+                </h2>
+                <p style={{ fontSize: '12px', color: '#64748b', margin: '2px 0 0' }}>
+                  Tested architectures with verified weights.
+                </p>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <div
+                style={{
+                  padding: '10px 12px',
+                  backgroundColor: '#090d16',
+                  borderRadius: '6px',
+                  border: '1px solid rgba(255, 255, 255, 0.06)',
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                }}
+              >
+                <div>
+                  <div style={{ fontWeight: 600, color: '#f8fafc', fontSize: '12px' }}>
+                    TinyLlama 1.1B Chat
+                  </div>
+                  <div style={{ fontSize: '11px', color: '#64748b' }}>
+                    22 Layers · 2048 Hidden Dim · Sliced across 2+ PCs
+                  </div>
+                </div>
+                <a
+                  href="/inference?model=tinyllama"
+                  style={{
+                    padding: '4px 10px',
+                    backgroundColor: 'rgba(59, 130, 246, 0.15)',
+                    color: '#60a5fa',
+                    border: '1px solid rgba(59, 130, 246, 0.3)',
+                    borderRadius: '4px',
+                    fontSize: '11px',
+                    fontWeight: 500,
+                  }}
+                >
+                  Deploy →
+                </a>
+              </div>
+
+              <div
+                style={{
+                  padding: '10px 12px',
+                  backgroundColor: '#090d16',
+                  borderRadius: '6px',
+                  border: '1px solid rgba(255, 255, 255, 0.06)',
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                }}
+              >
+                <div>
+                  <div style={{ fontWeight: 600, color: '#f8fafc', fontSize: '12px' }}>
+                    BLOOMZ 560M Instruction
+                  </div>
+                  <div style={{ fontSize: '11px', color: '#64748b' }}>
+                    24 Layers · 1024 Hidden Dim · Multilingual
+                  </div>
+                </div>
+                <a
+                  href="/inference?model=bloomz"
+                  style={{
+                    padding: '4px 10px',
+                    backgroundColor: 'rgba(59, 130, 246, 0.15)',
+                    color: '#60a5fa',
+                    border: '1px solid rgba(59, 130, 246, 0.3)',
+                    borderRadius: '4px',
+                    fontSize: '11px',
+                    fontWeight: 500,
+                  }}
+                >
+                  Deploy →
+                </a>
+              </div>
+            </div>
+          </section>
+        </div>
+      </div>
+
+      {/* Bottom Section: Recent Execution Audit */}
+      <section
+        style={{
+          backgroundColor: '#0f172a',
+          border: '1px solid rgba(255, 255, 255, 0.08)',
+          borderRadius: '10px',
+          padding: '20px',
+        }}
+      >
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+          <div>
+            <h2 style={{ fontSize: '15px', fontWeight: 600, color: '#f8fafc', margin: 0 }}>
+              Recent Task & Inference Executions
+            </h2>
+            <p style={{ fontSize: '12px', color: '#64748b', margin: '2px 0 0' }}>
+              Historical task records and model execution logs.
+            </p>
+          </div>
+          <a href="/history" style={{ fontSize: '12px', color: '#60a5fa', fontWeight: 500 }}>
+            View Full Audit History →
+          </a>
+        </div>
+
+        {tasks.length === 0 ? (
+          <div
+            style={{
+              padding: '30px',
+              textAlign: 'center',
+              backgroundColor: '#090d16',
+              borderRadius: '8px',
+              border: '1px dashed rgba(255, 255, 255, 0.1)',
+              color: '#64748b',
+              fontSize: '13px',
+            }}
+          >
+            No task records logged yet. Run your first model in Model Studio.
+          </div>
+        ) : (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '12px' }}>
+              <thead>
+                <tr style={{ borderBottom: '1px solid rgba(255, 255, 255, 0.08)', color: '#64748b' }}>
+                  <th style={{ padding: '8px 10px', fontWeight: 600 }}>Task ID</th>
+                  <th style={{ padding: '8px 10px', fontWeight: 600 }}>Model</th>
+                  <th style={{ padding: '8px 10px', fontWeight: 600 }}>Status</th>
+                  <th style={{ padding: '8px 10px', fontWeight: 600 }}>Execution Mode</th>
+                  <th style={{ padding: '8px 10px', fontWeight: 600 }}>Timestamp</th>
+                  <th style={{ padding: '8px 10px', fontWeight: 600, textAlign: 'right' }}>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {tasks.slice(0, 6).map((t) => (
+                  <tr
+                    key={t.task_id}
+                    style={{
+                      borderBottom: '1px solid rgba(255, 255, 255, 0.04)',
+                      transition: 'background-color 0.1s ease',
+                    }}
+                  >
+                    <td style={{ padding: '10px', fontFamily: 'var(--font-mono)', color: '#cbd5e1' }}>
+                      {t.task_id.slice(0, 16)}…
+                    </td>
+                    <td style={{ padding: '10px', fontWeight: 500, color: '#f8fafc' }}>
+                      {t.model_name || 'Generic Model'}
+                    </td>
+                    <td style={{ padding: '10px' }}>
+                      <StatusBadge status={t.status} size="sm" />
+                    </td>
+                    <td style={{ padding: '10px', color: '#94a3b8' }}>
+                      {t.mode || 'Distributed P2P'}
+                    </td>
+                    <td style={{ padding: '10px', color: '#64748b' }}>
+                      {timeAgo(t.created_at)}
+                    </td>
+                    <td style={{ padding: '10px', textAlign: 'right' }}>
+                      <a
+                        href={`/history?task_id=${encodeURIComponent(t.task_id)}`}
+                        style={{
+                          fontSize: '11px',
+                          color: '#60a5fa',
+                          padding: '3px 8px',
+                          borderRadius: '4px',
+                          backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                        }}
+                      >
+                        Inspect Details →
+                      </a>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+    </AppLayout>
   )
 }

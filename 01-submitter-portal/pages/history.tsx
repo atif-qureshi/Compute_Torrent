@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useState } from 'react'
-import Head from 'next/head'
+import React, { useCallback, useEffect, useState } from 'react'
 import { useRouter } from 'next/router'
-import styles from '../styles/Home.module.css'
-import PortalNav from '../components/PortalNav'
+import AppLayout from '../components/AppLayout'
+import StatusBadge from '../components/StatusBadge'
+import DiagnosticBanner from '../components/DiagnosticBanner'
 
 const API = '/api/ct'
 
@@ -10,41 +10,40 @@ export default function History() {
   const router = useRouter()
   const [tasks, setTasks] = useState<any[]>([])
   const [selected, setSelected] = useState<any>(null)
-  const [error, setError] = useState('')
   const [filter, setFilter] = useState('all')
+  const [search, setSearch] = useState('')
+  const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
   const [copiedText, setCopiedText] = useState(false)
 
-  useEffect(() => {
-    const load = () => fetch(`${API}/history?submitter_id=web-portal`).then(async (response) => {
-      if (!response.ok) throw new Error('Could not load task history')
-      setTasks(await response.json())
-      setError('')
-    }).catch((reason) => setError(reason.message)).finally(() => setLoading(false))
-
-    load()
-    const timer = setInterval(load, 5000)
-    return () => clearInterval(timer)
+  const loadTasks = useCallback(() => {
+    fetch(`${API}/history?submitter_id=web-portal`)
+      .then(async (res) => {
+        if (!res.ok) throw new Error('Failed to load task history')
+        return res.json()
+      })
+      .then((data) => {
+        setTasks(data || [])
+        setError('')
+      })
+      .catch((err) => setError(err.message))
+      .finally(() => setLoading(false))
   }, [])
 
   useEffect(() => {
-    if (!selected?.task_id || ['completed', 'failed'].includes(selected.status)) return
-    const timer = setInterval(() => {
-      fetch(`${API}/tasks/${encodeURIComponent(selected.task_id)}`)
-        .then((response) => response.ok ? response.json() : null)
-        .then((details) => { if (details) setSelected(details) })
-        .catch(() => {})
-    }, 3000)
+    loadTasks()
+    const timer = setInterval(loadTasks, 5000)
     return () => clearInterval(timer)
-  }, [selected?.task_id, selected?.status])
+  }, [loadTasks])
 
-  const loadTask = useCallback(async (id: string) => {
+  // Single task inspector loader
+  const loadTaskDetails = useCallback(async (id: string) => {
     try {
       const response = await fetch(`${API}/tasks/${encodeURIComponent(id)}`)
       if (!response.ok) {
-        let message = 'Could not load task details'
-        try { message = (await response.json()).detail || message } catch { /* Keep fallback */ }
-        throw new Error(message)
+        let msg = 'Could not load task details'
+        try { msg = (await response.json()).detail || msg } catch { /* ignore */ }
+        throw new Error(msg)
       }
       setSelected(await response.json())
       setError('')
@@ -53,232 +52,352 @@ export default function History() {
     }
   }, [])
 
-  const openTask = (id: string) => {
-    void router.push({ pathname: '/history', query: { task_id: id } }, undefined, { shallow: true })
-    void loadTask(id)
-  }
-
   useEffect(() => {
     const id = router.query.task_id
-    if (router.isReady && typeof id === 'string' && id !== selected?.task_id) void loadTask(id)
-  }, [router.isReady, router.query.task_id, selected?.task_id, loadTask])
+    if (router.isReady && typeof id === 'string' && id !== selected?.task_id) {
+      void loadTaskDetails(id)
+    }
+  }, [router.isReady, router.query.task_id, selected?.task_id, loadTaskDetails])
+
+  const openTask = (id: string) => {
+    void router.push({ pathname: '/history', query: { task_id: id } }, undefined, { shallow: true })
+    void loadTaskDetails(id)
+  }
 
   const downloadResult = () => {
-    const blob = new Blob([JSON.stringify(selected.result, null, 2)], { type: 'application/json' })
+    if (!selected) return
+    const blob = new Blob([JSON.stringify(selected, null, 2)], { type: 'application/json' })
     const link = document.createElement('a')
-    const url = URL.createObjectURL(blob)
-    link.href = url
-    link.download = `${selected.task_id}-result.json`
-    document.body.appendChild(link)
+    link.href = URL.createObjectURL(blob)
+    link.download = `task-${selected.task_id}-receipt.json`
     link.click()
-    link.remove()
-    window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+    URL.revokeObjectURL(link.href)
   }
 
   const copyResult = () => {
-    if (selected?.result?.text) {
-      navigator.clipboard.writeText(selected.result.text)
+    const text = selected?.result?.text || (typeof selected?.result === 'string' ? selected.result : JSON.stringify(selected?.result))
+    if (text) {
+      navigator.clipboard.writeText(text)
       setCopiedText(true)
       setTimeout(() => setCopiedText(false), 2000)
     }
   }
 
-  const visibleTasks = filter === 'all' ? tasks : tasks.filter((task) => task.status === filter)
+  const filteredTasks = tasks.filter((t) => {
+    if (filter !== 'all' && t.status !== filter) return false
+    if (search.trim()) {
+      const term = search.toLowerCase()
+      const matchId = (t.task_id || '').toLowerCase().includes(term)
+      const matchModel = (t.model_name || '').toLowerCase().includes(term)
+      return matchId || matchModel
+    }
+    return true
+  })
 
   return (
-    <div className={styles.container}>
-      <Head>
-        <title>Task History & Audit | ComputeTorrent</title>
-        <meta name="description" content="Audit trails, replica verification receipts and task history." />
-      </Head>
+    <AppLayout
+      title="Task Audit & Execution History"
+      subtitle="Task execution history, provider allocations, and verification logs."
+      actions={
+        <a
+          href="/inference"
+          style={{
+            padding: '6px 14px',
+            backgroundColor: '#3b82f6',
+            color: '#ffffff',
+            borderRadius: '6px',
+            fontSize: '12px',
+            fontWeight: 600,
+          }}
+        >
+          + Submit New Task
+        </a>
+      }
+    >
+      {error && (
+        <DiagnosticBanner
+          error={error}
+          onDismiss={() => setError('')}
+        />
+      )}
 
-      <main className={styles.main}>
-        <PortalNav />
-
-        <header className={styles.header}>
-          <div>
-            <div className={styles.eyebrow}>AUDIT TRAILS</div>
-            <h1 className={styles.title}>
-              Task Execution <span className={styles.titleGradient}>History</span>
-            </h1>
-            <p className={styles.description}>
-              Inspect provider task allocations, chunk splitting, multi-peer replica verification, and cryptographic audit proofs.
-            </p>
-          </div>
-          <a href="/inference" className={`${styles.actionButton} ${styles.actionPrimary}`}>
-            🧠 New Inference Run →
-          </a>
-        </header>
-
-        {error && (
-          <div className={styles.errorBanner}>
-            <span>⚠️ {error}</span>
-            <button className={styles.actionButton} onClick={() => setError('')}>Dismiss</button>
-          </div>
-        )}
-
-        {/* Task List Section */}
-        <section className={styles.card}>
-          <div className={styles.sectionHeading}>
-            <div>
-              <span className={styles.eyebrow}>SUBMISSIONS</span>
-              <h2>{tasks.length} Total Task Records</h2>
+      <div style={{ display: 'grid', gridTemplateColumns: selected ? '1.2fr 1fr' : '1fr', gap: '24px' }}>
+        {/* Left Column: Task Table */}
+        <section
+          style={{
+            backgroundColor: '#0f172a',
+            border: '1px solid rgba(255, 255, 255, 0.08)',
+            borderRadius: '10px',
+            padding: '20px',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '16px',
+          }}
+        >
+          {/* Controls Bar */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
+            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+              <span style={{ fontSize: '13px', fontWeight: 600, color: '#f8fafc' }}>
+                Submissions ({tasks.length})
+              </span>
+              <select
+                value={filter}
+                onChange={(e) => setFilter(e.target.value)}
+                style={{
+                  fontSize: '12px',
+                  backgroundColor: '#090d16',
+                  color: '#cbd5e1',
+                  border: '1px solid rgba(255, 255, 255, 0.1)',
+                  borderRadius: '6px',
+                  padding: '4px 8px',
+                }}
+              >
+                <option value="all">All Statuses</option>
+                <option value="pending">Pending</option>
+                <option value="allocated">Assigned</option>
+                <option value="running">Running</option>
+                <option value="completed">Completed</option>
+                <option value="failed">Failed</option>
+              </select>
             </div>
-            <select className={styles.filterSelect} value={filter} onChange={(e) => setFilter(e.target.value)}>
-              <option value="all">All Statuses ({tasks.length})</option>
-              <option value="pending">Pending</option>
-              <option value="allocated">Assigned</option>
-              <option value="running">Running</option>
-              <option value="completed">Completed</option>
-              <option value="failed">Failed</option>
-            </select>
+
+            <input
+              type="text"
+              placeholder="Search by Task ID or Model…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              style={{
+                fontSize: '12px',
+                backgroundColor: '#090d16',
+                minWidth: '220px',
+                padding: '4px 10px',
+              }}
+            />
           </div>
 
+          {/* Table */}
           {loading ? (
-            <p style={{ color: '#94a3b8' }}>Loading execution history…</p>
-          ) : visibleTasks.length === 0 ? (
-            <div className={styles.emptyState}>
-              <p>No tasks match the selected filter.</p>
+            <div style={{ padding: '30px', textAlign: 'center', color: '#64748b', fontSize: '13px' }}>
+              Loading audit history…
+            </div>
+          ) : filteredTasks.length === 0 ? (
+            <div
+              style={{
+                padding: '36px',
+                textAlign: 'center',
+                backgroundColor: '#090d16',
+                borderRadius: '8px',
+                border: '1px dashed rgba(255, 255, 255, 0.1)',
+                color: '#64748b',
+                fontSize: '13px',
+              }}
+            >
+              No task records matched this query.
             </div>
           ) : (
-            <div className={styles.taskTable}>
-              <div className={styles.taskTableHeader}>
-                <span>Task ID</span>
-                <span>Model Name</span>
-                <span>Status</span>
-                <span>Scheduler</span>
-                <span>Created At</span>
-                <span>Action</span>
-              </div>
-              {visibleTasks.map((task) => (
-                <div
-                  className={styles.taskRow}
-                  key={task.task_id}
-                  style={{ cursor: 'pointer' }}
-                  onClick={() => openTask(task.task_id)}
-                >
-                  <span className={styles.taskId}>{task.task_id.slice(0, 18)}…</span>
-                  <span style={{ fontWeight: 600, color: '#f8fafc' }}>{task.model_name}</span>
-                  <div>
-                    <span className={`${styles.statusPill} ${styles[`status_${task.status}`] || ''}`}>
-                      {task.status}
-                    </span>
-                  </div>
-                  <span style={{ color: '#94a3b8' }}>{task.mode || 'WS-RR'}</span>
-                  <span style={{ color: '#64748b' }}>{new Date(task.created_at).toLocaleString()}</span>
-                  <button type="button" className={styles.actionButton}>
-                    {selected?.task_id === task.task_id ? 'Viewing' : 'Inspect →'}
-                  </button>
-                </div>
-              ))}
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '12px' }}>
+                <thead>
+                  <tr style={{ borderBottom: '1px solid rgba(255, 255, 255, 0.08)', color: '#64748b' }}>
+                    <th style={{ padding: '8px 10px', fontWeight: 600 }}>Task Identifier</th>
+                    <th style={{ padding: '8px 10px', fontWeight: 600 }}>Model Name</th>
+                    <th style={{ padding: '8px 10px', fontWeight: 600 }}>Status</th>
+                    <th style={{ padding: '8px 10px', fontWeight: 600 }}>Mode</th>
+                    <th style={{ padding: '8px 10px', fontWeight: 600 }}>Timestamp</th>
+                    <th style={{ padding: '8px 10px', fontWeight: 600, textAlign: 'right' }}>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredTasks.map((t) => {
+                    const isSelected = selected?.task_id === t.task_id
+                    return (
+                      <tr
+                        key={t.task_id}
+                        style={{
+                          borderBottom: '1px solid rgba(255, 255, 255, 0.04)',
+                          backgroundColor: isSelected ? 'rgba(59, 130, 246, 0.08)' : 'transparent',
+                          cursor: 'pointer',
+                        }}
+                        onClick={() => openTask(t.task_id)}
+                      >
+                        <td style={{ padding: '10px', fontFamily: 'var(--font-mono)', color: isSelected ? '#60a5fa' : '#cbd5e1' }}>
+                          {t.task_id.slice(0, 14)}…
+                        </td>
+                        <td style={{ padding: '10px', fontWeight: 500, color: '#f8fafc' }}>
+                          {t.model_name || 'Generic Task'}
+                        </td>
+                        <td style={{ padding: '10px' }}>
+                          <StatusBadge status={t.status} size="sm" />
+                        </td>
+                        <td style={{ padding: '10px', color: '#94a3b8' }}>
+                          {t.mode || 'WS-RR'}
+                        </td>
+                        <td style={{ padding: '10px', color: '#64748b' }}>
+                          {new Date(t.created_at).toLocaleTimeString()}
+                        </td>
+                        <td style={{ padding: '10px', textAlign: 'right' }}>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              openTask(t.task_id)
+                            }}
+                            style={{
+                              fontSize: '11px',
+                              color: '#60a5fa',
+                              padding: '2px 8px',
+                              borderRadius: '4px',
+                              backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                            }}
+                          >
+                            Inspect →
+                          </button>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
             </div>
           )}
         </section>
 
-        {/* Selected Task Detail Inspector */}
+        {/* Right Column: Selected Task Inspector */}
         {selected && (
-          <section className={styles.card}>
-            <div className={styles.sectionHeading}>
+          <section
+            style={{
+              backgroundColor: '#0f172a',
+              border: '1px solid rgba(255, 255, 255, 0.08)',
+              borderRadius: '10px',
+              padding: '20px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '16px',
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
               <div>
-                <span className={styles.eyebrow}>TASK INSPECTOR</span>
-                <h2>{selected.task_id}</h2>
+                <span style={{ fontSize: '11px', fontWeight: 600, color: '#3b82f6', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                  Task Execution Detail
+                </span>
+                <h3 style={{ fontSize: '16px', fontWeight: 600, color: '#f8fafc', margin: '2px 0 0' }}>
+                  {selected.model_name || 'Task Execution'}
+                </h3>
+                <code style={{ fontSize: '11px', color: '#64748b', display: 'block', marginTop: '2px' }}>
+                  {selected.task_id}
+                </code>
               </div>
-              <span className={`${styles.statusPill} ${styles[`status_${selected.status}`] || ''}`}>
-                {selected.status}
-              </span>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button
+                  onClick={() => setSelected(null)}
+                  style={{
+                    color: '#94a3b8',
+                    fontSize: '16px',
+                    padding: '2px 6px',
+                  }}
+                  title="Close inspector"
+                >
+                  ✕
+                </button>
+              </div>
             </div>
 
-            <div className={styles.progressTrack}>
-              <div
-                className={styles.progressFill}
-                style={{
-                  width: `${selected.progress?.total ? (selected.progress.completed / selected.progress.total) * 100 : 0}%`
-                }}
-              />
+            {/* Status & Timing */}
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: '1fr 1fr',
+                gap: '8px',
+                padding: '12px',
+                backgroundColor: '#090d16',
+                borderRadius: '8px',
+                fontSize: '12px',
+              }}
+            >
+              <div>
+                <span style={{ color: '#64748b', display: 'block', fontSize: '11px' }}>Status</span>
+                <StatusBadge status={selected.status} size="sm" />
+              </div>
+              <div>
+                <span style={{ color: '#64748b', display: 'block', fontSize: '11px' }}>Created</span>
+                <span style={{ color: '#cbd5e1' }}>{new Date(selected.created_at).toLocaleString()}</span>
+              </div>
+              <div>
+                <span style={{ color: '#64748b', display: 'block', fontSize: '11px' }}>Submitter</span>
+                <span style={{ color: '#cbd5e1' }}>{selected.submitter_id || 'web-portal'}</span>
+              </div>
+              <div>
+                <span style={{ color: '#64748b', display: 'block', fontSize: '11px' }}>Replicas</span>
+                <span style={{ color: '#cbd5e1' }}>{selected.replicas || 1} Peer</span>
+              </div>
             </div>
 
-            <p style={{ margin: 0, fontSize: '13px', color: '#94a3b8' }}>
-              Progress: <b>{selected.progress?.completed || 0}</b> of <b>{selected.progress?.total || 0}</b> chunks verified · Model: <b>{selected.model_name}</b> · Scheduler: <b>{selected.mode || 'WS-RR'}</b>
-            </p>
-
-            {/* Chunks Accordion */}
-            {!!selected.chunks?.length && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '12px' }}>
-                <span className={styles.eyebrow}>CHUNK VERIFICATION RECEIPTS</span>
-                {selected.chunks.map((chunk: any) => (
-                  <div
-                    key={chunk.chunk_id}
-                    style={{
-                      background: 'rgba(15, 23, 42, 0.6)',
-                      border: '1px solid rgba(255, 255, 255, 0.06)',
-                      borderRadius: '10px',
-                      padding: '12px 16px',
-                      display: 'flex',
-                      flexDirection: 'column',
-                      gap: '6px'
-                    }}
-                  >
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <span style={{ fontWeight: 600, color: '#f8fafc', fontSize: '13px' }}>
-                        Chunk #{chunk.index + 1} ({chunk.chunk_id})
-                      </span>
-                      <span className={`${styles.statusPill} ${chunk.status === 'verified' ? styles.statusOnline : styles.statusBusy}`}>
-                        {chunk.status}
-                      </span>
-                    </div>
-
-                    <small style={{ color: '#94a3b8', fontSize: '11px' }}>
-                      Method: {chunk.verification?.method || (chunk.status === 'verified' ? 'Replica consensus' : 'Pending')}
-                      {chunk.verification?.canary?.passed ? ` · Canary check passed (${chunk.verification.canary.id})` : ''}
-                    </small>
-
-                    {chunk.verification?.verillm_audit && (
-                      <details style={{ marginTop: '6px', fontSize: '11px', color: '#a5b4fc' }}>
-                        <summary style={{ cursor: 'pointer' }}>View VeriLLM cryptographic commitment root</summary>
-                        <pre style={{ background: '#090e1a', padding: '10px', borderRadius: '8px', overflowX: 'auto', marginTop: '6px' }}>
-                          {JSON.stringify(chunk.verification.verillm_audit, null, 2)}
-                        </pre>
-                      </details>
-                    )}
-                  </div>
-                ))}
+            {/* Error banner if failed */}
+            {selected.error && (
+              <div style={{ padding: '10px 12px', backgroundColor: 'rgba(244, 63, 94, 0.08)', borderRadius: '6px', border: '1px solid rgba(244, 63, 94, 0.2)', color: '#fb7185', fontSize: '12px' }}>
+                ❌ {selected.error}
               </div>
             )}
 
-            {/* Generated Output */}
-            {selected.result?.text && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginTop: '12px' }}>
+            {/* Result Payload */}
+            {selected.result && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span className={styles.eyebrow}>VERIFIED MODEL OUTPUT</span>
-                  <div style={{ display: 'flex', gap: '8px' }}>
-                    <button type="button" className={styles.actionButton} onClick={copyResult}>
-                      {copiedText ? '✅ Copied' : '📄 Copy Output'}
+                  <span style={{ fontSize: '11px', fontWeight: 600, color: '#94a3b8', textTransform: 'uppercase' }}>
+                    Execution Result
+                  </span>
+                  <div style={{ display: 'flex', gap: '6px' }}>
+                    <button
+                      onClick={copyResult}
+                      style={{
+                        padding: '3px 8px',
+                        backgroundColor: 'rgba(255, 255, 255, 0.05)',
+                        border: '1px solid rgba(255, 255, 255, 0.1)',
+                        borderRadius: '4px',
+                        fontSize: '11px',
+                        color: '#cbd5e1',
+                      }}
+                    >
+                      {copiedText ? '✅ Copied' : '📄 Copy'}
                     </button>
-                    <button type="button" className={styles.actionButton} onClick={downloadResult}>
-                      💾 Download Result JSON
+                    <button
+                      onClick={downloadResult}
+                      style={{
+                        padding: '3px 8px',
+                        backgroundColor: 'rgba(255, 255, 255, 0.05)',
+                        border: '1px solid rgba(255, 255, 255, 0.1)',
+                        borderRadius: '4px',
+                        fontSize: '11px',
+                        color: '#cbd5e1',
+                      }}
+                    >
+                      💾 Export JSON
                     </button>
                   </div>
                 </div>
+
                 <pre
                   style={{
-                    background: '#090e1a',
+                    backgroundColor: '#090d16',
                     border: '1px solid rgba(255, 255, 255, 0.08)',
-                    borderRadius: '12px',
-                    padding: '18px',
-                    color: '#e2e8f0',
-                    fontSize: '13px',
-                    lineHeight: '1.7',
+                    borderRadius: '8px',
+                    padding: '12px',
+                    fontSize: '12px',
+                    color: '#f8fafc',
+                    maxHeight: '240px',
+                    overflowY: 'auto',
                     whiteSpace: 'pre-wrap',
-                    overflowWrap: 'anywhere'
+                    lineHeight: 1.5,
                   }}
                 >
-                  {selected.result.text}
+                  {typeof selected.result === 'object'
+                    ? JSON.stringify(selected.result, null, 2)
+                    : selected.result}
                 </pre>
               </div>
             )}
           </section>
         )}
-      </main>
-    </div>
+      </div>
+    </AppLayout>
   )
 }
