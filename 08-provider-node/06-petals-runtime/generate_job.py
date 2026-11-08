@@ -83,7 +83,9 @@ def _execute(job, progress, managers):
                 if layer_stage.sequence_manager.is_alive():
                     layer_stage.sequence_manager.update(wait=False)
 
-    def generate(prompt, limit):
+    rpc_timings = []
+
+    def generate(prompt, limit, record_timing=False):
         tokens = tokenizer(prompt, return_tensors="pt")["input_ids"]
         if tokens.shape[1] + limit > 512:
             raise ValueError("Prompt plus output exceeds the small-model limit of 512 tokens")
@@ -102,7 +104,14 @@ def _execute(job, progress, managers):
                     hidden = model.get_input_embeddings()(tokens)
                 step_values = []
                 for index, layer_stage in enumerate(stages):
+                    rpc_started = time.perf_counter()
                     hidden = layer_stage(hidden)
+                    if record_timing:
+                        assignment = job['plan'][index]
+                        rpc_timings.append(dict(node_id=assignment['node_id'],
+                            phase='prefill' if step == 0 else 'decode',
+                            blocks=assignment['end']-assignment['start'],
+                            input_tokens=int(tokens.shape[1]),seconds=time.perf_counter()-rpc_started))
                     boundary = hidden[:, -1:, :].detach().cpu().float().clone()
                     if not torch.isfinite(boundary).all():
                         raise RuntimeError("Provider returned non-finite activations")
@@ -125,7 +134,7 @@ def _execute(job, progress, managers):
 
     progress("running")
     generation_started = time.perf_counter()
-    original, output, trace, activations = generate(spec["prompt"], spec["max_new_tokens"])
+    original, output, trace, activations = generate(spec["prompt"], spec["max_new_tokens"], record_timing=True)
     generation_seconds = time.perf_counter() - generation_started
     envelope = {"job_id": job["id"], "model_id": spec["model_id"], "revision": spec["revision"],
         "prompt_sha256": hashlib.sha256(spec["prompt"].encode()).hexdigest(),
@@ -206,7 +215,8 @@ def _execute(job, progress, managers):
         "verification_seconds": round(verification_seconds, 3),
         "canary_seconds": round(canary_seconds, 3),
         "total_seconds": round(time.perf_counter() - started, 3),
-        "generated_tokens": len(output), "provider_count": len(job["plan"])}
+        "generated_tokens": len(output), "provider_count": len(job["plan"]),
+        "stage_rpc_timings": rpc_timings}
     if baseline_seconds is not None:
         metrics.update(single_node_reference_seconds=baseline_seconds,
             single_node_reference_tokens=baseline_tokens,

@@ -1,0 +1,2 @@
+# Optional offline MILP reference; not a coordinator runtime dependency.
+scipy>=1.11,<2

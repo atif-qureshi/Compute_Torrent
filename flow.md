@@ -809,3 +809,10 @@ The supplied hybrid networking requirements were audited and concrete control/se
 ## Follow-up integration evidence — 2026-11-07
 
 The selected custom WSS adapter is now integrated with gateway leases, worker routing and coordinator assignments, while preserving native Petals DHT/RPC/TLS. Two isolated native-worker inference runs passed for tiny random BLOOM and Llama/GQA, including the production stage pipeline and local boundary/canary verification. See docs/petals-relay-integration.md. Actual multiple-PC/CGNAT acceptance remains unverified because no second test system is available. Phase 3 stays partially validated. Operator-controlled updater configuration is unchanged by this follow-up; the existing updater assertion failure is recorded explicitly. No new roadmap phase or public deployment was started.
+
+
+## Sun optimization checkpoint — 2026-11-08
+
+Implemented the operator-requested CG-BPRR/CG-BP, shortest-path/WS-RR, cache admission, request-target tuning, conditional bounds and bounded optional MILP reference kernels. Added a measured single-job coordinator bridge with baseline fallback/dominance gating and real gateway stage timings. See [Sun implementation and evidence](docs/sun-optimization.md) for equation-to-function mapping, research attribution, assumptions, tests and outstanding gates.
+
+58 selected tests passed. Two isolated native Petals fixtures (BLOOM and Llama/GQA) executed unequal 3+1 ranges with successful production generation and existing checks. Synthetic planner costs are not measured speedups. Candidate Docker images built/imported successfully; live containers were not restarted and updater/provider distribution settings were unchanged. The runtime still admits one job and materializes processed ranges only. Persistent replica pools, concurrent online scheduling, real pretrained heterogeneous-peer A/B performance, physical multiple-PC/CGNAT acceptance and production readiness remain unverified. Phase 8 is partially implemented and isolated-validated, not complete.

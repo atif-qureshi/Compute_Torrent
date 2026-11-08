@@ -195,7 +195,7 @@ def replacement_stage(spec, stage, peers, assigned_nodes):
     return {**stage, "node_id": node, "device": device}
 
 
-def placement(spec, peers):
+def baseline_placement(spec, peers):
     """
     Allocate model layers according to Petals capacity-aware load balancing.
     Peers with higher capacity (e.g. GPUs, more VRAM/RAM) receive proportionally
@@ -270,12 +270,47 @@ def placement(spec, peers):
     return plan
 
 
+def placement(spec, peers, *, calibration=None, policy=None, diagnostics=None):
+    """Auto uses Sun only with valid native and activation-path measurements."""
+    from sun_runtime import sun_plan, CalibrationUnavailable
+    from sun_optimizer import Infeasible
+    policy = policy or os.getenv('COMPUTETORRENT_PLANNER', 'auto')
+    if policy not in {'auto', 'baseline', 'sun'}:
+        raise ValueError('COMPUTETORRENT_PLANNER must be auto, baseline or sun')
+    note = diagnostics if diagnostics is not None else {}
+    if policy != 'baseline' and calibration is not None:
+        try:
+            try:
+                baseline = baseline_placement(spec, peers)
+            except ValueError:
+                baseline = None
+            plan, evidence = sun_plan(spec, peers, provider_capacity, native_capacity, calibration,
+                                      baseline_plan=baseline)
+            note.update(evidence, predicted_plan_valid=True, requested_policy=policy)
+            if (policy == 'auto' and baseline is not None
+                    and evidence['estimated_per_token_seconds'] >= evidence['baseline_estimated_per_token_seconds']):
+                note.update(algorithm='baseline',candidate_algorithm=evidence['algorithm'],
+                            fallback_reason='Sun candidate does not improve the baseline under the same measured cost model')
+                return baseline
+            return plan
+        except (CalibrationUnavailable, Infeasible) as error:
+            if policy == 'sun':
+                raise ValueError('Sun planner prerequisites: ' + str(error)) from error
+            note.update(algorithm='baseline',fallback_reason=str(error),requested_policy=policy)
+    elif policy == 'sun':
+        raise ValueError('Sun planner requires measured activation calibration')
+    else:
+        note.update(algorithm='baseline',requested_policy=policy)
+    return baseline_placement(spec, peers)
+
+
 class Store:
     def __init__(self, path):
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         self.path = str(path)
         with self.db() as db:
             db.execute("CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, body TEXT NOT NULL)")
+            db.execute("CREATE TABLE IF NOT EXISTS optimizer_calibration (key TEXT PRIMARY KEY, body TEXT NOT NULL)")
         for job in self.all():
             if job["status"] not in {"completed", "failed", "cancelled"}:
                 job.update(status="failed", error="Coordinator restarted; resubmit to allocate fresh peer sessions")
@@ -294,6 +329,19 @@ class Store:
         with self.db() as db:
             rows = db.execute("SELECT body FROM jobs ORDER BY rowid DESC LIMIT 100").fetchall()
         return [self.settle_stages(json.loads(r[0])) for r in rows]
+
+    def calibrations(self):
+        with self.db() as db:
+            return {key: json.loads(body) for key,body in db.execute('SELECT key,body FROM optimizer_calibration')}
+
+    def save_calibrations(self, records):
+        with self.db() as db:
+            db.executemany('INSERT OR REPLACE INTO optimizer_calibration VALUES (?, ?)',
+                           [(key,json.dumps(value)) for key,value in records.items()])
+            # Bound persisted measurement history; old evidence is not routing input.
+            for key,body in db.execute('SELECT key,body FROM optimizer_calibration').fetchall():
+                if time.time()-json.loads(body).get('measured_at',0)>86400:
+                    db.execute('DELETE FROM optimizer_calibration WHERE key=?',(key,))
 
     @staticmethod
     def settle_stages(job):
@@ -445,7 +493,9 @@ def install(app, manager):
             peers = {n: i for n, i in manager.seeder_info.items() if n in manager.active_seeders}
             await profile_capacity(job, peers)
             peers = {n: i for n, i in manager.seeder_info.items() if n in manager.active_seeders}
-            plan = placement(job["spec"], peers)
+            decision = {}
+            plan = placement(job["spec"], peers, calibration=store.calibrations(), diagnostics=decision)
+            job['optimizer'] = decision
             job.update(plan=plan, status="loading", prefix="ct-" + job["id"],
                        stage_status={stage["node_id"]: {"status": "assigning"} for stage in plan})
             store.save(job)
@@ -483,6 +533,10 @@ def install(app, manager):
                             assigned_nodes | ({disconnected_id} if delivery_failed else set()))
                         if replacement:
                             replacement_id = replacement["node_id"]
+                            job.setdefault('optimizer', {}).setdefault('execution_deviations', []).append({
+                                'reason': 'provider_replaced_before_generation', 'from_node': disconnected_id,
+                                'to_node': replacement_id, 'start': stage['start'], 'end': stage['end']})
+                            job['optimizer']['predicted_plan_valid'] = False
                             stage.update(replacement)
                             assigned_sessions[replacement_id] = manager.active_seeders[replacement_id]
                             reserved_nodes.add(replacement_id)
@@ -515,6 +569,14 @@ def install(app, manager):
                     continue
 
                 if len(ready) == len(plan):
+                    decision = job.get('optimizer', {})
+                    for stage in ready:
+                        calibrated = decision.get('calibration', {}).get(stage['node_id'])
+                        if calibrated and calibrated.get('transport') != stage.get('transport'):
+                            decision['predicted_plan_valid'] = False
+                            decision.setdefault('execution_deviations', []).append({
+                                'reason': 'transport_changed_after_planning', 'node_id': stage['node_id'],
+                                'planned_transport': calibrated.get('transport'), 'actual_transport': stage.get('transport')})
                     job["plan"] = ready
                     break
                 store.save(job)
@@ -544,6 +606,14 @@ def install(app, manager):
                 response = await asyncio.to_thread(gateway, "/jobs/" + job["id"])
                 if response["status"] in {"completed", "failed"}:
                     job.update(response)
+                    from sun_runtime import record_calibration
+                    try:
+                        store.save_calibrations(record_calibration(job,
+                            {n:i for n,i in manager.seeder_info.items() if n in manager.active_seeders}, native_capacity, previous_records=store.calibrations()))
+                    except Exception as calibration_error:
+                        # Optional performance telemetry cannot turn a verified
+                        # completed inference into a failed inference.
+                        job.setdefault('optimizer', {})['calibration_error'] = str(calibration_error)[:300]
                     break
                 job["status"] = response["status"]
                 job["progress"] = response.get("progress", 0)
@@ -589,7 +659,7 @@ def install(app, manager):
             preflight = {n: {**i, "profile": {k: v for k, v in i.get("profile", {}).items()
                                             if k != "petals_capacity"}}
                          for n, i in manager.seeder_info.items() if n in manager.active_seeders}
-            placement({**spec, **CATALOG[spec["model_id"]]}, preflight)
+            baseline_placement({**spec, **CATALOG[spec["model_id"]]}, preflight)
         except ValueError as exc:
             print(f"[SUBMIT_ERROR] 422: {exc}", flush=True)
             raise HTTPException(422, str(exc)) from exc

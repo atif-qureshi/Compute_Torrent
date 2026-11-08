@@ -41,3 +41,10 @@ The measurement schema, freshness policy, isolated A/B gate, fallback, and route
 - Decide whether capacity should optimize first-token latency, steady decoding, or bounded throughput under an explicit workload. Multi-session routing and redundant coverage consume resources and need separate acceptance gates.
 - Set validation expectations for stale telemetry, Docker/driver compatibility, memory-estimation error, stage churn and verifier sensitivity to heterogeneous numeric execution. Preserve the existing verification decision and release restrictions.
 - Runtime benchmarks, multi-peer recovery and external reachability are unverified in this phase. Phase 0.5 approval covers research only. Provider migration and production release gates remain in the [readiness checklist](provider-release-readiness.md).
+
+
+## Sun optimization checkpoint — 2026-11-08
+
+Implemented the operator-requested CG-BPRR/CG-BP, shortest-path/WS-RR, cache admission, request-target tuning, conditional bounds and bounded optional MILP reference kernels. Added a measured single-job coordinator bridge with baseline fallback/dominance gating and real gateway stage timings. See [Sun implementation and evidence](sun-optimization.md) for equation-to-function mapping, research attribution, assumptions, tests and outstanding gates.
+
+58 selected tests passed. Two isolated native Petals fixtures (BLOOM and Llama/GQA) executed unequal 3+1 ranges with successful production generation and existing checks. Synthetic planner costs are not measured speedups. Candidate Docker images built/imported successfully; live containers were not restarted and updater/provider distribution settings were unchanged. The runtime still admits one job and materializes processed ranges only. Persistent replica pools, concurrent online scheduling, real pretrained heterogeneous-peer A/B performance, physical multiple-PC/CGNAT acceptance and production readiness remain unverified. Phase 8 is partially implemented and isolated-validated, not complete.

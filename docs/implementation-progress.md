@@ -147,3 +147,10 @@ Rebuilt and recreated only the local orchestrator service after confirming zero 
 ## Two-card header and full-width assignment — 2026-11-08
 
 Per the operator’s revised layout, the overview uses two equal-width cards for connection/resources and a full-width current-assignment panel beneath them. Narrow windows retain a single-column fallback. Live widgets, controls, theme and connection behavior remain unchanged. Eleven native tests (including equal top widths, lower-panel columnspan/position/full width, responsive reflow and retained widgets) and eleven connection regressions pass. Target build is 2026.11.08-ui4.
+
+
+## Sun optimization checkpoint — 2026-11-08
+
+Implemented the operator-requested CG-BPRR/CG-BP, shortest-path/WS-RR, cache admission, request-target tuning, conditional bounds and bounded optional MILP reference kernels. Added a measured single-job coordinator bridge with baseline fallback/dominance gating and real gateway stage timings. See [Sun implementation and evidence](sun-optimization.md) for equation-to-function mapping, research attribution, assumptions, tests and outstanding gates.
+
+58 selected tests passed. Two isolated native Petals fixtures (BLOOM and Llama/GQA) executed unequal 3+1 ranges with successful production generation and existing checks. Synthetic planner costs are not measured speedups. Candidate Docker images built/imported successfully; live containers were not restarted and updater/provider distribution settings were unchanged. The runtime still admits one job and materializes processed ranges only. Persistent replica pools, concurrent online scheduling, real pretrained heterogeneous-peer A/B performance, physical multiple-PC/CGNAT acceptance and production readiness remain unverified. Phase 8 is partially implemented and isolated-validated, not complete.

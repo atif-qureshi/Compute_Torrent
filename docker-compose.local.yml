@@ -39,6 +39,7 @@ services:
       COMPUTETORRENT_SWARM_DATA: /data
       COMPUTETORRENT_PETALS_URL: http://petals:8002
       COMPUTETORRENT_JOB_DATA: /data/distributed
+      COMPUTETORRENT_PLANNER: ${COMPUTETORRENT_PLANNER:-auto}
       COMPUTETORRENT_PROVIDER_UPDATE_DIR: /data/provider-updates
       COMPUTETORRENT_PROVIDER_ENDPOINTS: ${COMPUTETORRENT_PROVIDER_ENDPOINTS:-[]}
       COMPUTETORRENT_PETALS_NETWORK_POLICY: ${COMPUTETORRENT_PETALS_NETWORK_POLICY:-auto}
@@ -75,7 +76,8 @@ services:
 
   petals:
     build: ./08-provider-node/06-petals-runtime
-    image: computetorrent-petals:local
+    # Keep gateway experiments separate from provider-owned runtime image tags.
+    image: computetorrent-petals-gateway:local
     container_name: computetorrent-petals
     environment:
       COMPUTETORRENT_API_TOKEN: ${COMPUTETORRENT_API_TOKEN:?Set COMPUTETORRENT_API_TOKEN in .env}
