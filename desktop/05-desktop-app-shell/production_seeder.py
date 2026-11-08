@@ -2,6 +2,8 @@ import hmac
 import secrets
 from connection_routes import select_endpoint, candidates as route_candidates, proof as route_proof, register_digest
 import customtkinter as ctk
+import provider_views as ui
+from provider_views import onboarding as render_onboarding, dashboard as render_dashboard, NoticeLabel
 import asyncio
 import ipaddress
 import random
@@ -156,7 +158,7 @@ class CoordinatorConnect(Connect):
 def uuid_safe(value):
     return "".join(ch for ch in str(value) if ch.isalnum() or ch in "-_")[:48] or "task"
 
-ctk.set_appearance_mode("dark")
+ctk.set_appearance_mode("light")
 ctk.set_default_color_theme("blue")
 
 # Configuration
@@ -168,8 +170,8 @@ class ComputeTorrentSeeder(ctk.CTk):
         super().__init__()
         build = provider_identity()
         self.title(f"ComputeTorrent Provider · {build['petals_provider_build']} · Network v{build['petals_network_revision']}")
-        self.geometry("980x820")
-        self.minsize(760, 640)
+        self.geometry("1120x850")
+        self.minsize(960, 680)
         self.resizable(True, True)
         
         # State
@@ -442,39 +444,39 @@ class ComputeTorrentSeeder(ctk.CTk):
             widget.destroy()
 
         # ── Top toolbar bar ──────────────────────────────────────────────────
-        toolbar = ctk.CTkFrame(self, fg_color="#2e1065", height=52)
+        toolbar = ctk.CTkFrame(self, fg_color=ui.SURFACE, height=52)
         toolbar.pack(fill="x")
         toolbar.pack_propagate(False)
 
         brand_frame = ctk.CTkFrame(toolbar, fg_color="transparent")
         brand_frame.pack(side="left", padx=(16, 8))
-        ctk.CTkLabel(brand_frame, text="⚡ ComputeTorrent", text_color="#c084fc",
-                     font=("Arial", 13, "bold")).pack(side="left")
+        ctk.CTkLabel(brand_frame, text="ComputeTorrent", text_color=ui.INK,
+                     font=("Segoe UI", 13, "bold")).pack(side="left")
         curr_ver = provider_identity().get("petals_provider_build", "dev")
-        ctk.CTkLabel(brand_frame, text=f"v{curr_ver}", text_color="#a855f7",
-                     font=("Arial", 11)).pack(side="left", padx=(6, 0))
+        ctk.CTkLabel(brand_frame, text=f"v{curr_ver}", text_color=ui.MUTED,
+                     font=("Segoe UI", 11)).pack(side="left", padx=(6, 0))
 
         # Update button (right side)
-        self.update_button = ctk.CTkButton(toolbar, text="🔍 Check for Updates", width=180,
-                                            fg_color="#7c3aed", hover_color="#6d28d9",
-                                            font=("Arial", 12, "bold"),
+        self.update_button = ctk.CTkButton(toolbar, text="Check for updates", width=180,
+                                            fg_color="#5750d5", hover_color="#4942be",
+                                            font=("Segoe UI", 12, "bold"),
                                             command=self.update_clicked)
         self.update_button.pack(side="right", padx=12, pady=8)
 
         # Status label (centre-left)
-        self.update_notice = ctk.CTkLabel(toolbar, text="Checking for updates…", text_color="#94a3b8",
-                                          font=("Arial", 12))
+        self.update_notice = NoticeLabel(toolbar, text="Checking for updates…", text_color=ui.MUTED,
+                                          font=("Segoe UI", 11), wraplength=280, height=42)
         self.update_notice.pack(side="left", padx=16)
 
         # ── Update progress strip (hidden by default, shown during download) ─
-        self._update_banner = ctk.CTkFrame(self, fg_color="#0f172a", height=36)
+        self._update_banner = ctk.CTkFrame(self, fg_color=ui.BG, height=36)
         # NOT packed yet — shown only when downloading
 
         self._update_progress_bar = ctk.CTkProgressBar(
             self._update_banner,
             width=460, height=16,
             corner_radius=8,
-            fg_color="#1e293b",
+            fg_color=ui.BORDER,
             progress_color="#6366f1",
             mode="determinate",
         )
@@ -483,7 +485,7 @@ class ComputeTorrentSeeder(ctk.CTk):
 
         self._update_progress_label = ctk.CTkLabel(
             self._update_banner, text="0%  —  0.0 / 0.0 MB",
-            font=("Courier New", 11), text_color="#38bdf8"
+            font=("Courier New", 11), text_color="#5750d5"
         )
         self._update_progress_label.pack(side="left", padx=(0, 16), pady=10)
 
@@ -493,16 +495,16 @@ class ComputeTorrentSeeder(ctk.CTk):
             if is_newer:
                 size_mb = round(manifest.get("size", 0) / (1024 * 1024), 1)
                 self.update_notice.configure(
-                    text=f"🔥 Update Available: v{manifest.get('version')} ({size_mb} MB) — click to download",
-                    text_color="#fbbf24"
+                    text=f"Update available: v{manifest.get('version')} ({size_mb} MB) — click to download",
+                    text_color=ui.WARNING
                 )
-                self.update_button.configure(text="⬇️ Download & Install", fg_color="#ea580c", hover_color="#c2410c")
+                self.update_button.configure(text="Download & install", fg_color="#ea580c", hover_color="#c2410c")
             else:
                 self.update_notice.configure(
-                    text=f"✅ Up to date — v{manifest.get('version', curr_ver)}",
-                    text_color="#86efac"
+                    text=f"Up to date — v{manifest.get('version', curr_ver)}",
+                    text_color=ui.GREEN
                 )
-                self.update_button.configure(text="🔍 Check for Updates", fg_color="#7c3aed", hover_color="#6d28d9")
+                self.update_button.configure(text="Check for updates", fg_color="#5750d5", hover_color="#4942be")
 
     def check_for_update(self, manual=False):
         if self.shutting_down:
@@ -663,162 +665,11 @@ class ComputeTorrentSeeder(ctk.CTk):
         threading.Thread(target=work, daemon=True).start()
     
     def show_onboarding(self):
-        self.clear_screen()
-        frame = ctk.CTkScrollableFrame(self, fg_color="#080c18")
-        frame.pack(fill="both", expand=True, padx=20, pady=20)
-        
-        # Header Banner
-        header_card = ctk.CTkFrame(frame, fg_color="#0f172a", border_width=1, border_color="#1e293b", corner_radius=16)
-        header_card.pack(fill="x", padx=10, pady=(5, 15))
-        
-        title = ctk.CTkLabel(header_card, text="⚡ ComputeTorrent Provider",
-                             font=("Arial", 26, "bold"), text_color="#ffffff")
-        title.pack(pady=(16, 4))
-        
-        subtitle = ctk.CTkLabel(header_card, text="🌐 High-Performance Distributed AI Computing Node",
-                                font=("Arial", 13), text_color="#38bdf8")
-        subtitle.pack(pady=(0, 16))
-        
-        # Section 1: System Hardware Profile (4 Distinct Modern Cards)
-        sec_title = ctk.CTkLabel(frame, text="📊 DETECTED HARDWARE CAPACITIES",
-                                 font=("Arial", 12, "bold"), text_color="#818cf8")
-        sec_title.pack(anchor="w", padx=12, pady=(10, 8))
-        
-        hw_grid = ctk.CTkFrame(frame, fg_color="transparent")
-        hw_grid.pack(fill="x", padx=6, pady=4)
-        hw_grid.grid_columnconfigure((0, 1), weight=1)
-        
-        # Card 1: CPU (Indigo / Cyan Accent)
-        cpu_card = ctk.CTkFrame(hw_grid, fg_color="#131b2e", border_width=1, border_color="#233354", corner_radius=12)
-        cpu_card.grid(row=0, column=0, padx=6, pady=6, sticky="nsew")
-        ctk.CTkLabel(cpu_card, text="💻 PROCESSOR (CPU)", font=("Arial", 11, "bold"), text_color="#38bdf8").pack(anchor="w", padx=14, pady=(12, 2))
-        cpu_name = self.profile.get('cpu_model') or f"{self.profile['cpu_cores']} Core Processor"
-        ctk.CTkLabel(cpu_card, text=cpu_name[:40], font=("Arial", 14, "bold"), text_color="#f8fafc").pack(anchor="w", padx=14)
-        ctk.CTkLabel(cpu_card, text=f"• Logical Cores: {self.profile['cpu_cores']}\n• Physical Cores: {self.profile.get('physical_cores', '—')}\n• CPU Load: {self.profile.get('cpu_load_pct', 0)}%",
-                     font=("Courier New", 11), text_color="#94a3b8", justify="left").pack(anchor="w", padx=14, pady=(4, 12))
-        
-        # Card 2: RAM (Emerald Accent)
-        ram_card = ctk.CTkFrame(hw_grid, fg_color="#102322", border_width=1, border_color="#1b453e", corner_radius=12)
-        ram_card.grid(row=0, column=1, padx=6, pady=6, sticky="nsew")
-        ctk.CTkLabel(ram_card, text="🧠 SYSTEM MEMORY (RAM)", font=("Arial", 11, "bold"), text_color="#34d399").pack(anchor="w", padx=14, pady=(12, 2))
-        ctk.CTkLabel(ram_card, text=f"{self.profile['RAM']} GB Installed RAM", font=("Arial", 14, "bold"), text_color="#f8fafc").pack(anchor="w", padx=14)
-        ctk.CTkLabel(ram_card, text=f"• Free Available: {self.profile.get('free_ram_gb', 0)} GB\n• Disk Free Space: {self.profile.get('disk_free_gb', '—')} GB\n• Allocation Limit: {self.memory_limit_gb} GB Max",
-                     font=("Courier New", 11), text_color="#94a3b8", justify="left").pack(anchor="w", padx=14, pady=(4, 12))
-        
-        # Card 3: GPU (Violet Accent)
-        gpu_card = ctk.CTkFrame(hw_grid, fg_color="#1e162f", border_width=1, border_color="#3b275e", corner_radius=12)
-        gpu_card.grid(row=1, column=0, padx=6, pady=6, sticky="nsew")
-        ctk.CTkLabel(gpu_card, text="🎮 GRAPHICS & ACCELERATION", font=("Arial", 11, "bold"), text_color="#a78bfa").pack(anchor="w", padx=14, pady=(12, 2))
-        gpu_name = self.profile['GPU'] or "Integrated / CPU Only"
-        ctk.CTkLabel(gpu_card, text=gpu_name[:40], font=("Arial", 14, "bold"), text_color="#f8fafc").pack(anchor="w", padx=14)
-        vram_text = f"{self.profile['VRAM'] / 1024:.1f} GB Dedicated" if self.profile['VRAM'] else "Shared System Memory"
-        ctk.CTkLabel(gpu_card, text=f"• Dedicated VRAM: {vram_text}\n• CUDA Ready: {'✅ Yes' if self.profile['CUDA'] else '❌ No (CPU Mode)'}\n• GPU Devices: {self.profile.get('gpu_count', 0)} detected",
-                     font=("Courier New", 11), text_color="#94a3b8", justify="left").pack(anchor="w", padx=14, pady=(4, 12))
-        
-        # Card 4: Docker & Runtime (Amber Accent)
-        dock_card = ctk.CTkFrame(hw_grid, fg_color="#241b12", border_width=1, border_color="#4d351b", corner_radius=12)
-        dock_card.grid(row=1, column=1, padx=6, pady=6, sticky="nsew")
-        ctk.CTkLabel(dock_card, text="🐳 EXECUTION SANDBOX & TIER", font=("Arial", 11, "bold"), text_color="#fbbf24").pack(anchor="w", padx=14, pady=(12, 2))
-        tier_title = f"Tier {self.profile['tier']} · {'GPU Inference' if self.profile['tier'] == 1 else 'CPU Layer Serving'}"
-        ctk.CTkLabel(dock_card, text=tier_title, font=("Arial", 14, "bold"), text_color="#f8fafc").pack(anchor="w", padx=14)
-        ctk.CTkLabel(dock_card, text=f"• Docker Desktop: {'✅ Available & Active' if self.profile['docker_ok'] else '❌ Not Detected'}\n• Petals CPU Image: {'✅ Installed' if self.profile.get('petals_image_ready') else '⏳ Needs Build'}\n• Protocol Version: v{self.profile.get('petals_protocol_version', 1)}",
-                     font=("Courier New", 11), text_color="#94a3b8", justify="left").pack(anchor="w", padx=14, pady=(4, 12))
-
-        # Refresh Hardware Button
-        ctk.CTkButton(frame, text="🔄 Re-detect System Hardware", command=self.refresh_hardware_profile,
-                      height=32, width=220, fg_color="#1e293b", hover_color="#334155",
-                      font=("Arial", 12)).pack(anchor="w", padx=12, pady=(4, 16))
-
-        # Section 2: Network Connection Setup Card
-        connection_card = ctk.CTkFrame(frame, fg_color="#0f172a", border_width=1, border_color="#1e293b", corner_radius=16)
-        connection_card.pack(fill="x", padx=10, pady=8)
-        
-        ctk.CTkLabel(connection_card, text="🌐 NETWORK CONFIGURATION", font=("Arial", 12, "bold"), text_color="#818cf8").pack(anchor="w", padx=16, pady=(14, 2))
-        ctk.CTkLabel(connection_card,
-            text="Paste the coordinator address from your operator. On the same LAN you can enter its private IP. Use localhost only when both apps run on this PC.",
-            wraplength=760, justify="left", font=("Arial", 11), text_color="#94a3b8").pack(anchor="w", padx=16, pady=(0, 8))
-        
-        self.server_entry = ctk.CTkEntry(connection_card, height=38, corner_radius=8,
-                                         fg_color="#090e1a", border_color="#334155",
-                                         font=("Courier New", 12), text_color="#38bdf8",
-                                         placeholder_text="ws://192.168.100.7:8001/ws/seeder")
-        self.server_entry.pack(fill="x", padx=16, pady=(2, 10))
-        self.server_entry.insert(0, self.orchestrator_url)
-        
-        self.enrollment_token = self.enrollment_token or DEFAULT_ENROLLMENT_TOKEN
-        ctk.CTkLabel(connection_card, text="Provider join code (first connection or credential recovery)", font=("Arial", 11, "bold"), text_color="#cbd5e1").pack(anchor="w", padx=16)
-        self.enrollment_entry = ctk.CTkEntry(connection_card, height=38, corner_radius=8,
-                                             fg_color="#090e1a", border_color="#334155",
-                                             font=("Arial", 12),
-                                             placeholder_text=DEFAULT_ENROLLMENT_TOKEN)
-        self.enrollment_entry.pack(fill="x", padx=16, pady=(2, 6))
-        self.enrollment_entry.insert(0, self.enrollment_token)
-            
-        # Limits and Sliders Grid
-        limits = ctk.CTkFrame(connection_card, fg_color="transparent")
-        limits.pack(fill="x", padx=16, pady=(6, 10))
-        
-        ctk.CTkLabel(limits, text="Max CPU Cores:", font=("Arial", 11, "bold")).pack(side="left")
-        self.cpu_entry = ctk.CTkEntry(limits, width=70, height=32, corner_radius=6, fg_color="#090e1a", font=("Arial", 12))
-        self.cpu_entry.pack(side="left", padx=(8, 24))
-        self.cpu_entry.insert(0, str(self.cpu_limit))
-        
-        ctk.CTkLabel(limits, text="Max RAM (GB):", font=("Arial", 11, "bold")).pack(side="left")
-        self.memory_entry = ctk.CTkEntry(limits, width=70, height=32, corner_radius=6, fg_color="#090e1a", font=("Arial", 12))
-        self.memory_entry.pack(side="left", padx=8)
-        self.memory_entry.insert(0, str(self.memory_limit_gb))
-        
-        self.connection_error = ctk.CTkLabel(connection_card, text="", text_color="#f43f5e", font=("Arial", 11, "bold"))
-        self.connection_error.pack(anchor="w", padx=16)
-        self.connection_error.configure(text=self.connection_note)
-        
-        # Petals Layer Toggle Card
-        petals_box = ctk.CTkFrame(connection_card, fg_color="#131b2e", border_width=1, border_color="#20304f", corner_radius=12)
-        petals_box.pack(fill="x", padx=16, pady=(6, 14))
-        
-        self.layer_switch = ctk.CTkSwitch(petals_box, text="Share Model Layers (Petals Distributed LLM Inference)",
-                                          progress_color="#10b981", font=("Arial", 13, "bold"), text_color="#f8fafc")
-        self.layer_switch.pack(anchor="w", padx=14, pady=(12, 4))
-        if self.petals_enabled:
-            self.layer_switch.select()
-            
-        ctk.CTkLabel(petals_box,
-            text="When enabled, this node receives and serves model transformer blocks assigned by the coordinator. Weights stream securely into isolated Docker containers.",
-            wraplength=720, justify="left", font=("Arial", 11), text_color="#94a3b8").pack(anchor="w", padx=14, pady=(0, 10))
-            
-        runtime_ctrls = ctk.CTkFrame(petals_box, fg_color="transparent")
-        runtime_ctrls.pack(fill="x", padx=14, pady=(0, 10))
-        
-        ctk.CTkButton(runtime_ctrls, text="📦 Install CPU Runtime Image", command=lambda: self.install_petals_runtime("cpu"),
-                      height=32, fg_color="#0369a1", hover_color="#0284c7").pack(side="left", padx=(0, 8))
-        if self.profile.get("CUDA"):
-            ctk.CTkButton(runtime_ctrls, text="🚀 Install NVIDIA CUDA Runtime", command=lambda: self.install_petals_runtime("cuda"),
-                          height=32, fg_color="#7c3aed", hover_color="#9333ea").pack(side="left", padx=8)
-                          
-        self.runtime_label = ctk.CTkLabel(petals_box,
-            text=f"Petals CPU runtime: {'✅ Ready' if self.profile.get('petals_image_ready') else '⏳ Not installed'} · CUDA runtime: {'✅ Ready' if self.profile.get('petals_cuda_ready') else 'N/A'}",
-            font=("Arial", 11), text_color="#38bdf8")
-        self.runtime_label.pack(anchor="w", padx=14, pady=(0, 10))
-        
-        if not self.profile['docker_ok']:
-            warn_card = ctk.CTkFrame(frame, fg_color="#451a1a", border_width=1, border_color="#7f1d1d", corner_radius=10)
-            warn_card.pack(fill="x", padx=10, pady=6)
-            ctk.CTkLabel(warn_card, text="⚠️ Warning: Docker Desktop must be running before tasks can execute.",
-                         font=("Arial", 12, "bold"), text_color="#fca5a5").pack(padx=12, pady=10)
-        
-        # Connect Button (Electric Gradient Styling)
-        connect_btn = ctk.CTkButton(frame, text="Connect",
-                                    command=self.start_connection,
-                                    height=52, corner_radius=12,
-                                    font=("Arial", 15, "bold"),
-                                    fg_color="#6366f1", hover_color="#4f46e5")
-        connect_btn.pack(fill="x", padx=10, pady=(15, 8))
-        
-        # Footer
-        footer = ctk.CTkLabel(frame,
-            text=f"Node: {self.node_id or 'Unregistered'} • Orchestrator Target: {self.orchestrator_url}",
-            font=("Courier New", 10), text_color="#64748b")
-        footer.pack(pady=(0, 16))
+        # Background hardware scans must not discard an unsaved sharing choice.
+        choice = (bool(self.layer_switch.get()) if hasattr(self, "layer_switch")
+                  and self.layer_switch.winfo_exists() else self.petals_enabled)
+        render_onboarding(self)
+        self.layer_switch.select() if choice else self.layer_switch.deselect()
 
     def install_petals_runtime(self, device):
         """Build a sandboxed Petals worker image on this volunteer PC."""
@@ -1460,149 +1311,7 @@ class ComputeTorrentSeeder(ctk.CTk):
             }))
     
     def show_dashboard(self):
-        self.clear_screen()
-        frame = ctk.CTkScrollableFrame(self, fg_color="#080c18")
-        frame.pack(fill="both", expand=True, padx=20, pady=20)
-        
-        # 1. Top Node Banner & Status
-        top_banner = ctk.CTkFrame(frame, fg_color="#0f172a", border_width=1, border_color="#1e293b", corner_radius=16)
-        top_banner.pack(fill="x", padx=10, pady=(5, 12))
-        
-        header_row = ctk.CTkFrame(top_banner, fg_color="transparent")
-        header_row.pack(fill="x", padx=16, pady=12)
-        
-        title_box = ctk.CTkFrame(header_row, fg_color="transparent")
-        title_box.pack(side="left")
-        
-        ctk.CTkLabel(title_box, text="⚡ ComputeTorrent Provider Node",
-                     font=("Arial", 20, "bold"), text_color="#ffffff").pack(anchor="w")
-        self.node_label = ctk.CTkLabel(title_box, text="", font=("Courier New", 11), text_color="#94a3b8")
-        self.node_label.pack(anchor="w", pady=(2, 0))
-        self.connection_badge = ctk.CTkLabel(title_box, text="", font=("Arial", 13, "bold"))
-        self.connection_badge.pack(anchor="w", pady=(4, 0))
-        self.connection_detail = ctk.CTkLabel(top_banner, text="", wraplength=650, justify="left")
-        self.connection_detail.pack(anchor="w", padx=16, pady=(0, 8))
-        ctk.CTkButton(header_row, text="Disconnect", width=105, command=self.disconnect_provider
-                      ).pack(side="right", padx=(8, 0))
-        self.render_connection_state()
-                     
-        self.status_label = ctk.CTkLabel(header_row, text="Activity: Waiting",
-                                         font=("Arial", 13, "bold"), text_color="#38bdf8",
-                                         fg_color="#0c192d", corner_radius=20, padx=14, pady=6)
-        self.status_label.pack(side="right")
-        
-        # 2. Hardware Specs 4-Card Strip
-        hw_grid = ctk.CTkFrame(frame, fg_color="transparent")
-        hw_grid.pack(fill="x", padx=6, pady=4)
-        hw_grid.grid_columnconfigure((0, 1, 2, 3), weight=1)
-        
-        # CPU Card
-        c1 = ctk.CTkFrame(hw_grid, fg_color="#131b2e", border_width=1, border_color="#233354", corner_radius=12)
-        c1.grid(row=0, column=0, padx=4, pady=4, sticky="nsew")
-        ctk.CTkLabel(c1, text="💻 PROCESSOR", font=("Arial", 10, "bold"), text_color="#38bdf8").pack(anchor="w", padx=10, pady=(8, 2))
-        cpu_text = self.profile.get('cpu_model') or f"{self.profile['cpu_cores']} Cores"
-        ctk.CTkLabel(c1, text=cpu_text[:20], font=("Arial", 12, "bold"), text_color="#f8fafc").pack(anchor="w", padx=10)
-        self.cpu_detail = ctk.CTkLabel(c1, text="", font=("Arial", 11), text_color="#94a3b8")
-        self.cpu_detail.pack(anchor="w", padx=10, pady=(2, 8))
-        
-        # RAM Card
-        c2 = ctk.CTkFrame(hw_grid, fg_color="#102322", border_width=1, border_color="#1b453e", corner_radius=12)
-        c2.grid(row=0, column=1, padx=4, pady=4, sticky="nsew")
-        ctk.CTkLabel(c2, text="🧠 MEMORY (RAM)", font=("Arial", 10, "bold"), text_color="#34d399").pack(anchor="w", padx=10, pady=(8, 2))
-        ctk.CTkLabel(c2, text=f"{self.profile['RAM']} GB Installed", font=("Arial", 12, "bold"), text_color="#f8fafc").pack(anchor="w", padx=10)
-        self.memory_detail = ctk.CTkLabel(c2, text="", font=("Arial", 11), text_color="#94a3b8")
-        self.memory_detail.pack(anchor="w", padx=10, pady=(2, 8))
-                     
-        # GPU Card
-        c3 = ctk.CTkFrame(hw_grid, fg_color="#1e162f", border_width=1, border_color="#3b275e", corner_radius=12)
-        c3.grid(row=0, column=2, padx=4, pady=4, sticky="nsew")
-        ctk.CTkLabel(c3, text="🎮 ACCELERATION", font=("Arial", 10, "bold"), text_color="#a78bfa").pack(anchor="w", padx=10, pady=(8, 2))
-        gpu_short = (self.profile['GPU'] or "CPU Only")[:20]
-        ctk.CTkLabel(c3, text=gpu_short, font=("Arial", 12, "bold"), text_color="#f8fafc").pack(anchor="w", padx=10)
-        self.gpu_detail = ctk.CTkLabel(c3, text="", font=("Arial", 11), text_color="#94a3b8")
-        self.gpu_detail.pack(anchor="w", padx=10, pady=(2, 8))
-                     
-        # Sandbox Card
-        c4 = ctk.CTkFrame(hw_grid, fg_color="#241b12", border_width=1, border_color="#4d351b", corner_radius=12)
-        c4.grid(row=0, column=3, padx=4, pady=4, sticky="nsew")
-        ctk.CTkLabel(c4, text="🐳 RUNTIME", font=("Arial", 10, "bold"), text_color="#fbbf24").pack(anchor="w", padx=10, pady=(8, 2))
-        self.docker_detail = ctk.CTkLabel(c4, text="", font=("Arial", 12, "bold"), text_color="#f8fafc")
-        self.docker_detail.pack(anchor="w", padx=10)
-        ctk.CTkLabel(c4, text="Separate from connection status",
-                     font=("Arial", 11), text_color="#94a3b8").pack(anchor="w", padx=10, pady=(2, 8))
-        self.render_resources()
-
-        # 3. Active Task Highlight Card (Glowing Cyan / Electric Border)
-        task_card = ctk.CTkFrame(frame, fg_color="#0c192d", border_width=2, border_color="#0ea5e9", corner_radius=14)
-        task_card.pack(fill="x", padx=10, pady=10)
-        
-        task_header = ctk.CTkFrame(task_card, fg_color="transparent")
-        task_header.pack(fill="x", padx=16, pady=(12, 4))
-        ctk.CTkLabel(task_header, text="🎯 ACTIVE INFERENCE TASK", font=("Arial", 11, "bold"), text_color="#38bdf8").pack(side="left")
-        self.layer_label = ctk.CTkLabel(task_header,
-            text="Layer sharing enabled · waiting for assignment" if self.petals_enabled else "Layer sharing disabled",
-            font=("Arial", 12, "bold"), text_color="#34d399")
-        self.layer_label.pack(side="right")
-        
-        self.task_label = ctk.CTkLabel(task_card, text="Current Task: Idle / Waiting for work from coordinator",
-                                       font=("Arial", 14, "bold"), text_color="#ffffff", justify="left")
-        self.task_label.pack(anchor="w", padx=16, pady=(4, 14))
-
-        # 4. Multi-Colored Metrics Grid (Verified Chunks in Cyan, Credits in Amber)
-        stats_grid = ctk.CTkFrame(frame, fg_color="transparent")
-        stats_grid.pack(fill="x", padx=6, pady=4)
-        stats_grid.grid_columnconfigure((0, 1), weight=1)
-        
-        # Left Metric Card: Verified Chunks
-        m_left = ctk.CTkFrame(stats_grid, fg_color="#0c1a29", border_width=1, border_color="#153654", corner_radius=14)
-        m_left.grid(row=0, column=0, padx=4, pady=4, sticky="nsew")
-        ctk.CTkLabel(m_left, text="⚡ VERIFIED CHUNKS / RUNS", font=("Arial", 11, "bold"), text_color="#38bdf8").pack(anchor="w", padx=16, pady=(12, 2))
-        self.count_label = ctk.CTkLabel(m_left, text=str(self.tasks_completed), font=("Arial", 32, "bold"), text_color="#00d4ff")
-        self.count_label.pack(anchor="w", padx=16)
-        ctk.CTkLabel(m_left, text="Replica consensus approved tasks", font=("Arial", 11), text_color="#64748b").pack(anchor="w", padx=16, pady=(2, 12))
-        
-        # Right Metric Card: Credits Earned
-        m_right = ctk.CTkFrame(stats_grid, fg_color="#21190f", border_width=1, border_color="#4d351b", corner_radius=14)
-        m_right.grid(row=0, column=1, padx=4, pady=4, sticky="nsew")
-        ctk.CTkLabel(m_right, text="💰 DEMO CREDITS EARNED", font=("Arial", 11, "bold"), text_color="#fbbf24").pack(anchor="w", padx=16, pady=(12, 2))
-        self.credits_label = ctk.CTkLabel(m_right, text=str(self.credits_earned), font=("Arial", 32, "bold"), text_color="#f59e0b")
-        self.credits_label.pack(anchor="w", padx=16)
-        ctk.CTkLabel(m_right, text="Contribution accounting balance", font=("Arial", 11), text_color="#64748b").pack(anchor="w", padx=16, pady=(2, 12))
-
-        # 5. Recent Verified History Card
-        history_card = ctk.CTkFrame(frame, fg_color="#0f172a", border_width=1, border_color="#1e293b", corner_radius=14)
-        history_card.pack(fill="x", padx=10, pady=8)
-        ctk.CTkLabel(history_card, text="📜 RECENT TASK CONTRIBUTION AUDIT", font=("Arial", 11, "bold"), text_color="#818cf8").pack(anchor="w", padx=16, pady=(12, 4))
-        self.history_box = ctk.CTkTextbox(history_card, height=110, corner_radius=8,
-                                          fg_color="#090e1a", border_color="#1e293b",
-                                          font=("Courier New", 11), text_color="#94a3b8")
-        self.history_box.pack(fill="x", padx=16, pady=(2, 14))
-        self.update_work_history()
-
-        # 6. Action Buttons Bar
-        btn_bar = ctk.CTkFrame(frame, fg_color="transparent")
-        btn_bar.pack(fill="x", padx=10, pady=(6, 16))
-        
-        self.pause_btn = ctk.CTkButton(btn_bar, text="⏸️ Pause Contributions",
-                                      width=180, height=40, corner_radius=10,
-                                      font=("Arial", 12, "bold"),
-                                      fg_color="#d97706", hover_color="#b45309",
-                                      command=self.toggle_pause)
-        self.pause_btn.pack(side="left", padx=(0, 8))
-        
-        copy_id_btn = ctk.CTkButton(btn_bar, text="📋 Copy Node ID",
-                                    width=140, height=40, corner_radius=10,
-                                    font=("Arial", 12, "bold"),
-                                    fg_color="#1e293b", hover_color="#334155",
-                                    command=lambda: self.clipboard_clear() or self.clipboard_append(self.node_id or ''))
-        copy_id_btn.pack(side="left", padx=8)
-
-        quit_btn = ctk.CTkButton(btn_bar, text="Quit provider",
-                                 width=160, height=40, corner_radius=10,
-                                 font=("Arial", 12, "bold"),
-                                 fg_color="#e11d48", hover_color="#be123c",
-                                 command=self.close_application)
-        quit_btn.pack(side="right", padx=(8, 0))
+        render_dashboard(self)
 
     def toggle_pause(self):
         self.paused = not self.paused
@@ -1625,7 +1334,7 @@ class ComputeTorrentSeeder(ctk.CTk):
         state = "Registered" if registered else (
             "Reconnecting" if self.connection_state == "Registered" else self.connection_state
         )
-        self.connection_badge.configure(text=state, text_color="#86efac" if registered else "#fbbf24")
+        self.connection_badge.configure(text=state, text_color=ui.GREEN if registered else ui.WARNING)
         self.connection_detail.configure(text=self.connection_note)
         node = self.node_id if registered else "Awaiting confirmation"
         self.node_label.configure(text=f"Node: {node}")

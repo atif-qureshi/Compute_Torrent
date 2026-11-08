@@ -97,6 +97,37 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
             handler.assert_not_called()
             self.assertIs(manager.active_seeders["node"], new)
 
+    async def test_registration_always_records_client_host_including_reported_modes(self):
+        from types import SimpleNamespace
+        control = self.control
+        cases = [
+            ("LAN", "192.168.100.7", {}, "LAN", "192.168.100.7"),
+            ("WAN", "192.168.100.7", {}, "WAN", "192.168.100.7"),
+            (None, "127.0.0.1", {}, "LAN", "127.0.0.1"),
+            (None, "8.8.8.8", {}, "WAN", "8.8.8.8"),
+            ("LAN", None, {}, "LAN", "unknown"),
+            ("WAN", "127.0.0.1", {"x-forwarded-for": "8.8.8.8, 127.0.0.1"}, "WAN", "8.8.8.8"),
+        ]
+        for reported, host, headers, expected_mode, expected_host in cases:
+            with self.subTest(reported=reported, host=host):
+                manager = control.ConnectionManager()
+                ws = AsyncMock()
+                ws.client = SimpleNamespace(host=host) if host else None
+                ws.headers = {"authorization": "Bearer fixture", **headers}
+                message = dict(type="register", node_id="node", tier=2, profile={})
+                if reported is not None:
+                    message["network_mode"] = reported
+                ws.receive_text.side_effect = [json.dumps(message), control.WebSocketDisconnect()]
+                with patch.object(control, "manager", manager), patch.object(control, "DB_AVAILABLE", False), \
+                     patch.dict(control.MOCK_SEEDER_CREDENTIALS, node=hashlib.sha256(b"fixture").hexdigest()), \
+                     patch.object(control, "allocate_pending_tasks", new=AsyncMock()):
+                    await control.websocket_seeder(ws)
+                ack = json.loads(ws.send_text.call_args_list[0].args[0])
+                self.assertEqual(ack["type"], "register_ack")
+                self.assertEqual(ack["network_mode"], expected_mode)
+                self.assertEqual(ack["client_ip"], expected_host)
+
+
 
 class SchedulerTests(unittest.IsolatedAsyncioTestCase):
     async def test_status_rejects_bad_telemetry_without_crashing(self):

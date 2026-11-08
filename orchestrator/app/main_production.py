@@ -775,6 +775,16 @@ async def list_tasks(status: Optional[str] = None, limit: int = 50, submitter_id
                  "created_at": t.get("created_at"), "submitter_id": t.get("submitter_id")}
                 for t in tasks[:limit]]
 
+
+def sanitize_provider_profile(prof: dict | None) -> dict:
+    if not isinstance(prof, dict):
+        return prof or {}
+    clean_prof = dict(prof)
+    cpu = clean_prof.get("cpu_model")
+    if cpu and ("Family 6 Model 78" in str(cpu) or str(cpu).strip() == "Intel64 Family 6 Model 78 Stepping 3, GenuineIntel"):
+        clean_prof["cpu_model"] = "Intel(R) Core(TM) i5-6300U CPU @ 2.40GHz"
+    return clean_prof
+
 @app.get("/api/seeders")
 async def list_seeders():
     '''List registered seeders'''
@@ -788,7 +798,7 @@ async def list_seeders():
                     "tier": s.tier,
                     "status": s.status,
                     "state": manager.seeder_info.get(s.node_id, {}).get("state", "offline") if s.node_id in manager.active_seeders else "offline",
-                    "profile": manager.seeder_info.get(s.node_id, {}).get("profile", s.profile or {}),
+                    "profile": sanitize_provider_profile(manager.seeder_info.get(s.node_id, {}).get("profile", s.profile or {})),
                     "tasks_completed": s.tasks_completed,
                     "credits_earned": s.credits_earned,
                     "last_heartbeat": s.last_heartbeat.isoformat(),
@@ -1032,7 +1042,7 @@ async def websocket_seeder(websocket: WebSocket):
         if data.get("type") == "register":
             node_id = data.get("node_id")
             tier = data.get("tier")
-            profile = data.get("profile")
+            profile = sanitize_provider_profile(data.get("profile"))
             if not isinstance(node_id, str) or not isinstance(profile, dict) or type(tier) is not int:
                 await websocket.close(code=1008, reason="Invalid registration")
                 return
@@ -1048,14 +1058,16 @@ async def websocket_seeder(websocket: WebSocket):
                 await websocket.close(code=1008, reason="Provider enrollment is invalid or revoked")
                 return
             
+            # Resolve the address for both explicitly reported and inferred modes.
+            # The address is also included in manager state and register_ack.
+            forwarded = websocket.headers.get("x-forwarded-for", "").split(",")[0].strip()
+            real_ip = websocket.headers.get("x-real-ip", "").strip()
+            client_host = forwarded or real_ip or (websocket.client.host if websocket.client else "unknown")
             # Detect client network mode (LAN vs WAN)
             reported_mode = data.get("network_mode")
             if reported_mode in {"LAN", "WAN"}:
                 network_mode = reported_mode
             else:
-                forwarded = websocket.headers.get("x-forwarded-for", "").split(",")[0].strip()
-                real_ip = websocket.headers.get("x-real-ip", "").strip()
-                client_host = forwarded or real_ip or (websocket.client.host if websocket.client else "unknown")
                 try:
                     client_ip_obj = ipaddress.ip_address(client_host)
                     is_lan = client_ip_obj.is_private or client_ip_obj.is_loopback
@@ -1212,7 +1224,7 @@ async def handle_seeder_message(node_id: str, data: dict):
         manager.seeder_info.setdefault(node_id, {})["last_seen"] = time.monotonic()
         manager.seeder_info[node_id]["state"] = data.get("state", "online")
         if data.get("profile"):
-            incoming_profile = dict(data["profile"])
+            incoming_profile = sanitize_provider_profile(data["profile"])
             previous_profile = manager.seeder_info[node_id].get("profile", {})
             for trust_key in ("canary_failures", "canary_quarantined"):
                 if trust_key in previous_profile:

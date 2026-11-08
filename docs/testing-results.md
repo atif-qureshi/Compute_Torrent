@@ -98,3 +98,33 @@ The unit checks do not run real inference or connect external devices. Live boot
 Docker fixtures used pinned cached image f66ff872f25b, no external network or published ports, 2 CPUs/5 GiB limits, read-only source/websockets mounts, and randomly initialized tiny local checkpoints. No full pretrained weights were downloaded. Added explicit sequence-manager/DHT cleanup and verified successful fixture process exit. Test evidence is separate from production readiness and full VeriLLM claims. See docs/petals-relay-integration.md for reproduction and architecture.
 
 Local provider packaging completed after verification: build `2026.11.07-hybrid4`, setup ProductVersion matches, 167.67 MiB. EXE SHA256 matches provider-release.json; canonical/legacy setup hashes match. Frozen archive extraction confirms worker.py, relay_transport.py, route_selection.py and generate_job.py exactly match current source. No installer was installed or published, and no update feed/configuration was changed. The operator-selected existing version identifier was preserved.
+
+## Provider/portal visual alignment — 2026-11-08
+
+Implemented the operator-requested native provider redesign in canonical and legacy desktop sources. The provider follows the portal's light neutral/violet design, compact navigation and separated connection, hardware, activity and help views. Existing coordinator-confirmed state and operational callbacks are preserved; updater execution/configuration is unchanged. Eight actual Tk widget tests and 11 existing Phase 4 connection regressions pass, along with Python compilation and scoped whitespace checks. See [provider design record](provider-design.md). This presentation work does not advance the research roadmap or validate physical multi-PC inference. Local candidate packaging is isolated from installed/distributed artifacts.
+
+## Dark mode, original EXE replacement and authorized feed publication — 2026-11-08
+
+Added persisted Light/Dark/System appearance with native tuple-based colors. Theme changes do not reconstruct the form or discard unsaved values. Toolbar, status and notification colors adapt; the updater logic and connection protocol remain unchanged. The build is 2026.11.08-ui1. Nine native widget/theme/layout tests and 11 Phase 4 connection tests passed. Python compilation passed.
+
+The operator explicitly approved publishing the update feed. The canonical and legacy EXEs, installer ZIPs and Inno Setup installer were rebuilt. The original D:\ComputeTorrent\ComputeTorrent_Seeder.exe was backed up and replaced with the matching build. Old artifacts and the prior manifest are retained under runtime/provider-release-backup-2026.11.08-ui1. The feed uses a versioned artifact and an atomic manifest replacement. Its HTTP manifest and full streamed download passed size and SHA-256 verification. Old-build and current-build version detection both passed. The existing portal download API still returns its configured 410 and was not re-enabled.
+
+The actual frozen EXE launched with an isolated profile and exposed its 2026.11.08-ui1 native window. The test instance was closed and the replaced original-location EXE launched. Screenshot capture failed with FrameArrived timeout; activation and a fresh-window retry also failed with window capture timeout. Accordingly, rendered visual acceptance is still blocked by the capture environment; it is not recorded as passed. No multi-PC inference or automated installer installation/rollback was tested in this presentation update.
+
+## Provider navigation hotfix release — 2026-11-08
+
+Fixed ui1 showing Help while Connection was selected. Only the selected page host is now mapped; hidden-page widgets retain unsaved values. A new real Tk visibility test failed against ui1 and passes for ui2. Ten UI and 11 connection tests passed. The 2026.11.08-ui2 EXE was rebuilt and its page-host closure inspected in the final archive. Original-location replacement preserved the settings file byte-for-byte before relaunch. Canonical/legacy EXEs and ZIPs were updated, and the previously authorized update feed now serves ui2; full HTTP download size/SHA-256 were verified. Prior artifacts remain backed up under runtime/provider-release-backup-2026.11.08-ui2. Native screenshot/activation timed out, so screenshot-based acceptance remains unverified.
+
+## Responsive provider overview release — 2026-11-08
+
+2026.11.08-ui3 implements the requested side-by-side overview with three wide-screen columns, two medium-screen columns and a narrow-screen fallback. Eleven native layout/theme/navigation tests and eleven connection tests passed. Reflow preserves the live status widgets and keeps the wide-screen current-assignment text in view; card bounds were checked against the window. Before replacing the app, the release script checked for a current distributed assignment on this provider. Original-location replacement preserved settings byte-for-byte and relaunched the app. Canonical/legacy EXE and release metadata were updated and the previously authorized feed advanced to ui3. No updater or connection algorithm was changed.
+
+## Local provider registration crash — 2026-11-08
+
+Fixed UnboundLocalError for client_host in websocket_seeder when a provider explicitly reports LAN or WAN. Client-address resolution now runs before the reported-mode branch; existing classification and header precedence remain unchanged. The new actual-handler regression reproduced the failure on the prior code and passes for six reported/inferred/missing-client/forwarded-address cases. Thirteen recovery/coordinator tests and eleven provider connection regressions passed.
+
+Rebuilt and recreated only the local orchestrator service after confirming zero active distributed jobs. Health reports healthy; the existing local provider automatically reconnected and appears in the coordinator with a fresh control heartbeat. Fresh logs confirm an accepted LAN WebSocket and successful registration without the reported exception. No provider EXE, updater configuration, or inference execution was changed or tested by this hotfix.
+
+## Two-card header and full-width assignment — 2026-11-08
+
+Per the operator’s revised layout, the overview uses two equal-width cards for connection/resources and a full-width current-assignment panel beneath them. Narrow windows retain a single-column fallback. Live widgets, controls, theme and connection behavior remain unchanged. Eleven native tests (including equal top widths, lower-panel columnspan/position/full width, responsive reflow and retained widgets) and eleven connection regressions pass. Target build is 2026.11.08-ui4.

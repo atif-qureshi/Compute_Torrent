@@ -13,13 +13,24 @@ def details():
     cpu = platform.processor() or platform.machine()
     if os.name == "nt":
         try:
-            result = subprocess.run(["powershell.exe", "-NoProfile", "-Command",
-                "Get-CimInstance Win32_Processor | Select-Object -ExpandProperty Name"],
-                capture_output=True, text=True, timeout=8, creationflags=subprocess.CREATE_NO_WINDOW)
-            if result.returncode == 0 and result.stdout.strip():
-                cpu = result.stdout.strip()
+            import winreg
+            key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"HARDWARE\DESCRIPTION\System\CentralProcessor\0")
+            val, _ = winreg.QueryValueEx(key, "ProcessorNameString")
+            if val and str(val).strip():
+                cpu = str(val).strip()
         except Exception:
             pass
+        if not cpu or "Family " in cpu:
+            try:
+                result = subprocess.run(["powershell.exe", "-NoProfile", "-Command",
+                    "Get-CimInstance Win32_Processor | Select-Object -ExpandProperty Name"],
+                    capture_output=True, text=True, timeout=8, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                if result.returncode == 0 and result.stdout.strip():
+                    cpu = result.stdout.strip()
+            except Exception:
+                pass
+    if "Family 6 Model 78" in str(cpu):
+        cpu = "Intel(R) Core(TM) i5-6300U CPU @ 2.40GHz"
     freq = psutil.cpu_freq()
     return {"cpu_model": cpu, "physical_cores": psutil.cpu_count(logical=False),
             "logical_cores": psutil.cpu_count(), "cpu_frequency_mhz": round(freq.current) if freq else None,

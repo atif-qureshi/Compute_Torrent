@@ -1,4 +1,4 @@
-﻿# -*- mode: python ; coding: utf-8 -*-
+# -*- mode: python ; coding: utf-8 -*-
 
 import os
 import shutil
@@ -42,6 +42,7 @@ a = Analysis(
         'inference_runtime',
         'petals_control',
         'hardware_details',
+        'provider_views',
         'provider_update',
         'webtorrent_client',
         'customtkinter',
