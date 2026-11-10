@@ -75,7 +75,11 @@ def main():
                 raise RuntimeError("Model revision changed during the experiment")
             fixed_revision = revision
             metrics = job.get("metrics") or {}
-            print(f"  revision {revision[:12]}, generation {metrics.get('distributed_generation_seconds')}s, "
+            gen_sec = metrics.get("distributed_generation_seconds")
+            tokens = metrics.get("generated_tokens")
+            throughput = metrics.get("throughput_tokens_per_sec") or (round(tokens / gen_sec, 2) if gen_sec and tokens else "n/a")
+            lat_ms = metrics.get("latency_per_token_ms") or (round((gen_sec / tokens) * 1000, 1) if gen_sec and tokens else "n/a")
+            print(f"  revision {revision[:12]}, generation {gen_sec}s ({throughput} tok/s, {lat_ms} ms/tok), "
                   f"single-node CPU {metrics.get('single_node_reference_seconds')}s, "
                   f"boundary/canary passed", flush=True)
     print("Export measured CSV and group summaries with export_petals_runs.py.")

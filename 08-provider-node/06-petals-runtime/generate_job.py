@@ -210,8 +210,16 @@ def _execute(job, progress, managers):
         "verification": verification, "canary": {"passed": canary["passed"], "checks": canary["checks"],
             "token_match": canary["token_match"], "trace_sha256": digest(c_trace)},
         "trust": "Coordinator/reference model trusted; all generated stage boundaries checked locally; no independent provider proofs or on-chain disputes"}
+    tokens_count = len(output)
+    throughput = round(tokens_count / generation_seconds, 2) if generation_seconds > 0 else 0.0
+    latency_per_token_ms = round((generation_seconds / tokens_count) * 1000, 2) if tokens_count > 0 else 0.0
+    prefill_seconds = round(sum(t['seconds'] for t in rpc_timings if t.get('phase') == 'prefill'), 3)
+
     metrics = {"model_load_seconds": round(model_load_seconds, 3),
         "distributed_generation_seconds": round(generation_seconds, 3),
+        "throughput_tokens_per_sec": throughput,
+        "latency_per_token_ms": latency_per_token_ms,
+        "prefill_latency_seconds": prefill_seconds,
         "verification_seconds": round(verification_seconds, 3),
         "canary_seconds": round(canary_seconds, 3),
         "total_seconds": round(time.perf_counter() - started, 3),
