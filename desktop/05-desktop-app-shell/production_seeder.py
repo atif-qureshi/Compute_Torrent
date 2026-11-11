@@ -45,6 +45,62 @@ if getattr(sys, "frozen", False):
     if node_binary.is_file():
         os.environ.setdefault("COMPUTETORRENT_NODE", str(node_binary))
 
+def _detect_active_lan_ip():
+    virtual_tokens = (
+        "vethernet", "wsl", "docker", "hyper-v", "vmware", "virtualbox",
+        "loopback", "teredo", "bluetooth", "tailscale", "wireguard",
+        "zerotier", "tap", "tun", "npcap", "isatap", "6to4",
+    )
+    outbound_ip = None
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            sock.connect(("8.8.8.8", 80))
+            cand = sock.getsockname()[0]
+            if cand and not cand.startswith(("127.", "169.254.", "0.")):
+                outbound_ip = cand
+        finally:
+            sock.close()
+    except OSError:
+        outbound_ip = None
+
+    stats = psutil.net_if_stats()
+    addrs = psutil.net_if_addrs()
+    best = None
+    for name, entries in addrs.items():
+        st = stats.get(name)
+        if st is not None and not st.isup:
+            continue
+        low = name.lower()
+        if any(tok in low for tok in virtual_tokens):
+            continue
+        for addr in entries:
+            if getattr(addr, "family", None) != socket.AF_INET:
+                continue
+            ip = (addr.address or "").strip()
+            if not ip or ip.startswith(("127.", "169.254.", "0.")):
+                continue
+            try:
+                ip_obj = ipaddress.ip_address(ip)
+            except ValueError:
+                continue
+            score = 0
+            if any(k in low for k in ("wi-fi", "wifi", "wlan", "wireless")):
+                score += 100
+            if outbound_ip and ip == outbound_ip:
+                score += 50
+            if ip_obj.is_private:
+                score += 20
+            cand = (score, ip, name)
+            if best is None or cand[0] > best[0]:
+                best = cand
+    if best is not None:
+        return best[1], best[2]
+    if outbound_ip:
+        return outbound_ip, None
+    return None, None
+
+
 def coordinator_endpoint(value):
     parsed = urlsplit(value)
     if (parsed.scheme not in {"ws", "wss"} or not parsed.hostname or parsed.username is not None
@@ -1116,16 +1172,27 @@ class ComputeTorrentSeeder(ctk.CTk):
                 pass
 
         self.profile["petals"] = await asyncio.to_thread(self.petals.status, self.is_connected)
+        host_lan_ip, host_lan_iface = _detect_active_lan_ip()
+        active_url = getattr(self, "active_coordinator_url", self.orchestrator_url)
+        coord_host = (urlsplit(active_url).hostname or "").strip().lower()
+        local_coordinator = coord_host in {"127.0.0.1", "localhost", "::1"} or bool(host_lan_ip and coord_host == host_lan_ip.lower())
+        layer_progress = self.profile["petals"].get("progress") if isinstance(self.profile.get("petals"), dict) else None
         layer_active = self.profile["petals"].get("status") not in {"idle", "failed", "stopped", "cancelled"}
         if not layer_active and str(self.current_task or "").startswith("Petals:"):
             self.current_task = None
         if hasattr(self, 'layer_label'):
             text = self.profile['petals']
-            self.after(0, lambda: self.layer_label.configure(text=f"Layers: {text.get('start', '—')}–{text.get('end', '—')} · {text.get('status', 'idle')}"))
+            prog_text = f" ({int(layer_progress['percent'])}%)" if isinstance(layer_progress, dict) and layer_progress.get("percent") is not None else ""
+            _layer_txt = f"Layers: {text.get('start', '—')}–{text.get('end', '—')} · {text.get('status', 'idle')}{prog_text}"
+            self.after(0, lambda t=_layer_txt: self.layer_label.configure(text=t))
         await websocket.send(json.dumps({
             "type": "heartbeat",
             "node_id": self.node_id,
             "state": "paused" if self.paused else ("busy" if self.current_task or layer_active else "idle"),
+            "host_lan_ip": host_lan_ip,
+            "host_lan_interface": host_lan_iface,
+            "local_coordinator": local_coordinator,
+            "layer_progress": layer_progress if isinstance(layer_progress, dict) and layer_progress else None,
             "profile": self.profile,
         }))
         if not self.shutting_down:

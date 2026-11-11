@@ -16,7 +16,7 @@ using `bigscience/bloom-560m` or `bigscience/bloomz-560m`. `revision: "main"`
 resolves to a fixed Hub commit before workers are assigned. Providers download
 and cache weights automatically; the submitter does not handle weight files or
 send its raw prompt to layer providers. The coordinator downloads weights too
-for local reference verification, so it needs spare RAM and internet access.
+when the optional single-node benchmark is enabled.
 This pilot runs one distributed job at a time with up to 128 output tokens.
 
 Example JSON:
@@ -55,28 +55,16 @@ inside its Docker network. The gateway keeps its peer identity under
 serving only when its Petals module container is ready and healthy. Failed jobs
 stop every assigned peer; the portal preserves the failing peer's error.
 
-## Verification boundary
+## Benchmarking and job history
 
-The generation client commits real stage-boundary activations, chooses a fresh
-challenge after the commitment, then compares every generated stage boundary
-with a full local reference-model replay. A second random hidden canary prompt goes through the same peer layers
-and local replay. A mismatch fails the job and does not receive a verified
-result. The receipt labels this `local-boundary-replay-v1`; it is a
-VeriLLM-inspired local check, not the complete on-chain VeriLLM protocol, a
-blockchain settlement, or a dispute system. The local verifier is trusted and
-uses numeric activation tolerances; the route and challenges are recorded in
-the downloadable receipt.
+`benchmark: true` times a full-model CPU generation on the coordinator.
+Set `min_peers` and `max_peers` to the same value to require an exact provider
+count. Use `11-evaluation-benchmark/run_petals_experiment.py` for repeated runs
+and `export_petals_runs.py` for measured results without raw prompts. Compare
+generation times only when both runs generate the same number of tokens.
 
-`benchmark: true` also times a full-model CPU reference generation on the
-coordinator. Use `min_peers` and `max_peers` with the same value to require an
-exact provider count, and run `11-evaluation-benchmark/run_petals_experiment.py`
-for repeated 2/4-peer jobs. `export_petals_runs.py` exports the measured job
-records and group summaries without raw prompts. No speedup claim is made
-unless both runs generated the same number of tokens.
-
-Model Studio jobs appear in that page's job history and do not use the existing
-GGUF task history or demo credits. Root `/api/tasks` continues to run the full
-GGUF model on one provider.
+Model Studio jobs appear in that page's job history. GGUF task history and
+demo credits continue to use the existing `/api/tasks` workflow.
 
 ## Manual upstream tools
 

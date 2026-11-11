@@ -201,7 +201,6 @@ class RuntimeBridgeTests(unittest.TestCase):
         with self.assertRaises(CalibrationUnavailable):sun_plan(self.spec,self.peers,distributed.provider_capacity,distributed.native_capacity,records,self.now)
     def test_calibration_requires_verified_completion_and_real_decode_samples(self):
         job=dict(id='fixture',spec=self.spec,status='completed',plan=[dict(node_id='a',start=0,end=4,device='cpu',transport='direct')],
-                 receipt={'verification':{'passed':True},'canary':{'passed':True}},
                  metrics={'stage_rpc_timings':[dict(node_id='a',blocks=4,phase='decode',seconds=.23) for _ in range(4)]})
         records=record_calibration(job,self.peers,distributed.native_capacity,self.now)
         self.assertEqual(len(records),1)
@@ -216,7 +215,6 @@ class RuntimeBridgeTests(unittest.TestCase):
         key=calibration_key(self.spec,'a',self.peers['a'],'cpu')
         previous={key:{'observations':[dict(blocks=2,rpc_seconds=.05,measured_at=self.now-1,transport='direct')]}}
         job=dict(id='fit',spec=self.spec,status='completed',plan=[dict(node_id='a',start=0,end=4,device='cpu',transport='direct')],
-                 receipt={'verification':{'passed':True},'canary':{'passed':True}},
                  metrics={'stage_rpc_timings':[dict(node_id='a',blocks=4,phase='decode',seconds=.09) for _ in range(4)]})
         fit=record_calibration(job,self.peers,distributed.native_capacity,self.now,previous)
         self.assertEqual(fit[key]['source'],'gateway-stage-linear-fit-v1')
@@ -256,8 +254,7 @@ class CoordinatorSunFlowTests(unittest.IsolatedAsyncioTestCase):
                 timings=[dict(node_id=p['node_id'],blocks=p['end']-p['start'],phase='decode',
                     seconds=(p['end']-p['start'])/peers[p['node_id']]['profile']['petals_capacity']['inference_rps']+.01)
                     for p in starts for _ in range(4)]
-                return dict(status='completed',metrics={'stage_rpc_timings':timings},
-                    receipt={'verification':{'passed':True},'canary':{'passed':True}})
+                return dict(status='completed',metrics={'stage_rpc_timings':timings})
             return {}
         with tempfile.TemporaryDirectory() as folder:
             store=distributed.Store(str(Path(folder)/'jobs.sqlite3'))

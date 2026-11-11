@@ -199,8 +199,8 @@ export default function Home() {
           <a className={styles.textLink} href="/history">Open task history →</a>
         </section>
         <section className={styles.card}><div className={styles.sectionHeading}><div><div className={styles.eyebrow}>IMPLEMENTATION STATUS</div><h2>What runs today</h2></div></div>
-          <ul className={styles.featureList}><li>WebTorrent file transfer with SHA-256 checks</li><li>Replica agreement and operator-supplied output-hash canaries (MVP checks)</li><li>VeriLLM-inspired transcript commitments (limited audit record)</li></ul>
-          <p className={styles.muted}>libp2p currently supports LAN discovery and relay connectivity; it does not carry model or prompt files yet. Trackerless libp2p data transfer and the full VeriLLM/canary architecture remain future work.</p>
+          <ul className={styles.featureList}><li>WebTorrent file transfer with SHA-256 checks</li><li>Replica agreement</li></ul>
+          <p className={styles.muted}>libp2p currently supports LAN discovery and relay connectivity; it does not carry model or prompt files yet. Trackerless libp2p data transfer remains future work.</p>
           <p className={styles.muted}>Connected libp2p peers: {network?.status === 'unavailable' ? 'unavailable' : (network?.connected_peer_count ?? 'checking…')}. Last portal refresh: {lastUpdated ? new Date(lastUpdated).toLocaleTimeString() : 'checking…'}.</p>
         </section>
       </div>

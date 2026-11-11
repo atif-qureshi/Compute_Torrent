@@ -21,7 +21,11 @@ echo [OK] Docker Desktop is running.
 echo.
 
 :: 2. Start Docker Compose Stack (Petals, Orchestrator, Swarm, Postgres, Portal)
-echo [2/4] Starting ComputeTorrent services (Docker containers)...
+:: 2. Start Docker Compose Stack (Petals, Orchestrator, Swarm, Postgres, Portal)
+echo [2/4] Syncing active Wi-Fi/LAN IP and starting ComputeTorrent containers...
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0sync-host-ip.ps1"
+set "LAN_IP="
+for /f "tokens=1,* delims==" %%A in ('findstr /b "COMPUTETORRENT_PROVIDER_LAN_HOST=" "%~dp0.env" 2^>nul') do set "LAN_IP=%%B"
 docker compose -f docker-compose.local.yml --profile petals up -d
 if errorlevel 1 (
     echo [ERROR] Failed to start Docker containers.
@@ -48,6 +52,7 @@ echo ========================================================
 echo  * Web Portal:       http://localhost:3000
 echo  * Portal Password:  ComputeTorrentAdmin2026!
 echo  * Provider URL:     ws://127.0.0.1:8001/ws/seeder
+if defined LAN_IP echo  * LAN Provider URL: ws://%LAN_IP%:8001/ws/seeder
 echo  * Enrollment Token: local-volunteer-join
 echo.
 echo You can close this command window anytime without stopping the services.

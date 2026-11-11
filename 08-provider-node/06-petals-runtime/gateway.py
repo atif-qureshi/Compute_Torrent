@@ -111,14 +111,30 @@ class Handler(BaseHTTPRequestHandler):
                 id = self.path.split("/")[-1]
                 if not re.fullmatch(r"[a-f0-9]{32}", id):
                     return self.reply(400, {"detail": "Invalid job ID"})
+                def tail_job_log(job_id: str, limit: int = 50):
+                    log_file = ROOT / (job_id + ".log")
+                    if not log_file.is_file():
+                        return []
+                    try:
+                        lines = [ln for ln in log_file.read_text(errors="replace").splitlines() if ln.strip()]
+                        return [ln[-280:] for ln in lines[-limit:]]
+                    except Exception:
+                        return []
+
                 output = ROOT / (id + ".result.json")
                 if output.exists():
-                    return self.reply(200, json.loads(output.read_text()))
+                    payload = json.loads(output.read_text())
+                    if isinstance(payload, dict) and not payload.get("gateway_log_tail"):
+                        payload["gateway_log_tail"] = tail_job_log(id)
+                    return self.reply(200, payload)
                 with LOCK:
                     if id == active_id and process and process.poll() is None:
                         progress = ROOT / (id + ".progress.json")
-                        return self.reply(200, json.loads(progress.read_text()) if progress.exists() else {"status": "running"})
-                return self.reply(200, {"status": "failed", "error": "Runtime exited or restarted before producing a result; see gateway job log"})
+                        payload = json.loads(progress.read_text()) if progress.exists() else {"status": "running"}
+                        if isinstance(payload, dict):
+                            payload["gateway_log_tail"] = tail_job_log(id)
+                        return self.reply(200, payload)
+                return self.reply(200, {"status": "failed", "error": "Runtime exited or restarted before producing a result; see gateway job log", "gateway_log_tail": tail_job_log(id)})
             length = int(self.headers.get("Content-Length", 0))
             if self.command != "POST" or not 0 < length <= 131072:
                 return self.reply(400, {"detail": "Invalid request"})

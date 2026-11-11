@@ -22,8 +22,6 @@ def main():
     parser.add_argument("name", help="Stable model key used by tasks")
     parser.add_argument("file", type=Path, help="GGUF model file")
     parser.add_argument("--adapter", type=Path, help="Optional GGUF LoRA adapter compatible with the base model")
-    parser.add_argument("--canary-suite", type=Path,
-                        help="Optional JSON array of deterministic prompt/expected_output checks for hidden worker audits")
     parser.add_argument("--label", help="Human-readable label")
     parser.add_argument("--manifest", type=Path, default=Path(__file__).with_name("models.json"))
     parser.add_argument("--swarm-data", type=Path, default=Path(os.getenv("COMPUTETORRENT_SWARM_DATA", "runtime/swarm")))
@@ -40,27 +38,6 @@ def main():
         parser.error("adapter must be a safe, single-name GGUF LoRA adapter filename")
     if adapter_source and adapter_source.name == source.name:
         parser.error("model and adapter filenames must differ")
-    canaries = []
-    if args.canary_suite:
-        try:
-            suite = json.loads(args.canary_suite.read_text(encoding="utf-8-sig"))
-        except (OSError, ValueError) as error:
-            parser.error(f"could not read canary suite: {error}")
-        if not isinstance(suite, list) or not 1 <= len(suite) <= 100:
-            parser.error("canary suite must be a JSON array with 1 to 100 entries")
-        for index, item in enumerate(suite):
-            if (not isinstance(item, dict) or not isinstance(item.get("prompt"), str)
-                    or not item["prompt"].strip() or len(item["prompt"]) > 20000
-                    or not isinstance(item.get("expected_output"), str)
-                    or not item["expected_output"].strip() or len(item["expected_output"]) > 20000):
-                parser.error(f"canary entry {index} needs non-empty prompt and expected_output strings")
-            canaries.append({
-                "id": f"canary-{index:03d}",
-                "prompt": item["prompt"],
-                "expected_output_sha256": hashlib.sha256(item["expected_output"].strip().encode("utf-8")).hexdigest(),
-                "max_tokens": min(max(int(item.get("max_tokens", 64)), 1), 2048),
-                "seed": int(item.get("seed", 42)),
-            })
     expected_digest = hash_file(source)
     adapter_digest = hash_file(adapter_source) if adapter_source else None
     model_dir = (args.swarm_data.resolve() / "models" / args.name)
@@ -87,8 +64,6 @@ def main():
              "magnet_uri": magnet_uri}
     if adapter_source:
         entry.update({"adapter_file": adapter_source.name, "adapter_sha256": adapter_digest})
-    if canaries:
-        entry["canaries"] = canaries
     manifest[args.name] = entry
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     temporary = manifest_path.with_suffix(manifest_path.suffix + ".tmp")
@@ -97,8 +72,6 @@ def main():
     print(f"Registered {args.name}: {source.name} SHA-256 {expected_digest}")
     if adapter_source:
         print(f"Registered LoRA adapter {adapter_source.name} SHA-256 {adapter_digest}")
-    if canaries:
-        print(f"Registered {len(canaries)} hidden worker canary checks")
     print(f"Providers will fetch this model by WebTorrent on demand: {magnet_uri}")
 
 

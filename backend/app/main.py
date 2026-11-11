@@ -23,7 +23,7 @@ from pathlib import Path
 _MODULE_ROOT = os.getenv("COMPUTETORRENT_MODULE_ROOT", os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 sys.path.insert(0, os.path.join(_MODULE_ROOT, "modules"))
 from task_slicer import TaskSlicer
-from verification import verify_replicas, verify_verillm_receipt
+from verification import verify_replicas
 
 # Database configuration
 DATABASE_URL = "postgresql://postgres:postgres@localhost:5432/computetorrent"
@@ -211,38 +211,6 @@ def teardown_chunk_swarm(chunk_id: str) -> None:
         pass
 
 
-def queue_hidden_canary(model_name: str, model: dict) -> None:
-    """Queue a normal-looking private job with a coordinator-known answer."""
-    candidates = model.get("canaries", [])
-    if not candidates:
-        return
-    canary = secrets.choice(candidates)
-    task_id = f"task-{uuid.uuid4().hex[:8]}"
-    manifest = TaskSlicer().slice_task(
-        task_id, [canary["prompt"]], model_name, model["file"], model["sha256"],
-        replicas=1, max_tokens=canary.get("max_tokens", 64), seed=canary.get("seed", 42),
-        adapter_file=model.get("adapter_file"), adapter_sha256=model.get("adapter_sha256"))
-    chunk = manifest["chunks"][0]
-    chunk["hidden_canary"] = {"id": canary["id"],
-                              "expected_output_sha256": canary["expected_output_sha256"]}
-    if DB_AVAILABLE:
-        db = get_db()
-        try:
-            db.add(Task(task_id=task_id, submitter_id="__system_canary__", model_name=model_name,
-                        prompt=json.dumps([canary["prompt"]], ensure_ascii=False), status="pending",
-                        chunks=manifest["chunks"]))
-            db.commit()
-        finally:
-            db.close()
-        return
-    MOCK_TASKS[task_id] = {
-        "task_id": task_id, "submitter_id": "__system_canary__", "model_name": model_name,
-        "model_file": model["file"], "model_sha256": model["sha256"], "mode": "WS-RR",
-        "prompt": json.dumps([canary["prompt"]], ensure_ascii=False),
-        "chunks": manifest["chunks"], "manifest": {key: value for key, value in manifest.items() if key != "chunks"},
-        "status": "pending", "created_at": datetime.utcnow().isoformat(),
-    }
-
 # FastAPI app
 app = FastAPI(
     title="ComputeTorrent Orchestrator",
@@ -312,8 +280,6 @@ class ConnectionManager:
         for node_id in candidates:
             profile = self.seeder_info.get(node_id, {}).get("profile", {})
             if profile.get("docker_ok") is False:
-                continue
-            if profile.get("canary_quarantined"):
                 continue
             if requirements.get("require_cuda") and not profile.get("CUDA"):
                 continue
@@ -454,8 +420,6 @@ async def create_task(task: TaskCreate):
         profile = manager.seeder_info.get(node_id, {}).get("profile", {})
         if profile.get("docker_ok") is False:
             continue
-        if profile.get("canary_quarantined"):
-            continue
         if task.require_cuda and not profile.get("CUDA"):
             continue
         if profile.get("RAM", 0) < task.min_ram_gb:
@@ -531,17 +495,6 @@ async def create_task(task: TaskCreate):
         }
         created_at = MOCK_TASKS[task_id]["created_at"]
     
-    # A randomly selected model canary enters the same scheduler as ordinary
-    # work, but is stored under an internal account and filtered from the portal.
-    try:
-        canary_percent = min(max(int(os.getenv("COMPUTETORRENT_CANARY_PERCENT", "10")), 0), 100)
-    except ValueError:
-        canary_percent = 10
-    if model.get("canaries") and secrets.randbelow(100) < canary_percent:
-        try:
-            queue_hidden_canary(task.model_name, model)
-        except Exception as error:
-            print(f"Could not queue hidden canary for {task.model_name}: {error}")
 
     # Try to allocate immediately
     await allocate_pending_tasks()
@@ -601,35 +554,6 @@ async def get_task(task_id: str):
                         "failure_reason": c.get("failure_reason")}
                        for c in chunks],
         }
-
-@app.get("/api/verifications/{task_id}/{chunk_id}")
-async def get_verification_receipt(task_id: str, chunk_id: str):
-    """Return a replica receipt and independently recompute its transcript checks."""
-    if DB_AVAILABLE:
-        db = get_db()
-        try:
-            task = db.query(Task).filter(Task.task_id == task_id).first()
-            if not task or task.submitter_id == "__system_canary__":
-                raise HTTPException(status_code=404, detail="Task not found")
-            chunks = task.chunks or []
-        finally:
-            db.close()
-    else:
-        task = MOCK_TASKS.get(task_id)
-        if not task or task.get("submitter_id") == "__system_canary__":
-            raise HTTPException(status_code=404, detail="Task not found")
-        chunks = task.get("chunks", [])
-    chunk = next((item for item in chunks if item.get("chunk_id") == chunk_id), None)
-    if not chunk:
-        raise HTTPException(status_code=404, detail="Chunk not found")
-    verification = chunk.get("verification") or {}
-    receipt = verification.get("verillm_audit")
-    if not receipt:
-        raise HTTPException(status_code=404, detail="Verification receipt is not available yet")
-    return {"task_id": task_id, "chunk_id": chunk_id, "receipt": receipt,
-            "receipt_valid": verify_verillm_receipt(receipt),
-            "verification_status": verification.get("status"),
-            "assurance": receipt.get("assurance")}
 
 @app.get("/api/tasks")
 async def list_tasks(status: Optional[str] = None, limit: int = 50, submitter_id: Optional[str] = None):
@@ -832,9 +756,6 @@ async def websocket_seeder(websocket: WebSocket):
                         seeder.status = "online"
                         seeder.last_heartbeat = datetime.utcnow()
                         reported_profile = dict(profile or {})
-                        for trust_key in ("canary_failures", "canary_quarantined"):
-                            if trust_key in (seeder.profile or {}):
-                                reported_profile[trust_key] = seeder.profile[trust_key]
                         profile = reported_profile
                         seeder.profile = profile
                     else:
@@ -853,9 +774,6 @@ async def websocket_seeder(websocket: WebSocket):
             else:
                 existing_seeder = MOCK_SEEDERS.get(node_id, {})
                 reported_profile = dict(profile or {})
-                for trust_key in ("canary_failures", "canary_quarantined"):
-                    if trust_key in (existing_seeder.get("profile") or {}):
-                        reported_profile[trust_key] = existing_seeder["profile"][trust_key]
                 profile = reported_profile
                 MOCK_SEEDERS[node_id] = {
                     "node_id": node_id,
@@ -936,10 +854,6 @@ async def handle_seeder_message(node_id: str, data: dict):
         manager.seeder_info.setdefault(node_id, {})["state"] = data.get("state", "online")
         if data.get("profile"):
             incoming_profile = dict(data["profile"])
-            previous_profile = manager.seeder_info[node_id].get("profile", {})
-            for trust_key in ("canary_failures", "canary_quarantined"):
-                if trust_key in previous_profile:
-                    incoming_profile[trust_key] = previous_profile[trust_key]
             manager.seeder_info[node_id]["profile"] = incoming_profile
         # Update heartbeat
         if DB_AVAILABLE:
@@ -951,9 +865,6 @@ async def handle_seeder_message(node_id: str, data: dict):
                     seeder.status = data.get("state", "online")
                     if data.get("profile"):
                         profile = dict(data["profile"])
-                        for trust_key in ("canary_failures", "canary_quarantined"):
-                            if trust_key in (seeder.profile or {}):
-                                profile[trust_key] = seeder.profile[trust_key]
                         seeder.profile = profile
                     db.commit()
             finally:
@@ -1001,9 +912,9 @@ async def handle_seeder_message(node_id: str, data: dict):
             finally:
                 db.close()
         elif task_id in MOCK_TASKS and MOCK_TASKS[task_id].get("status") not in {"completed", "failed"}:
-        task = MOCK_TASKS[task_id]
-        if task.get("submitter_id") == "__system_canary__":
-            raise HTTPException(status_code=404, detail="Task not found")
+            task = MOCK_TASKS[task_id]
+            if task.get("submitter_id") == "__system_canary__":
+                return
             chunk = next((c for c in task["chunks"] if c["chunk_id"] == data.get("chunk_id") and c.get("assigned_to") == node_id), None)
             if chunk and state == "running":
                 chunk["status"] = "running"
@@ -1037,7 +948,6 @@ async def handle_seeder_message(node_id: str, data: dict):
         if hashlib.sha256(output.encode("utf-8")).hexdigest() != output_hash:
             return
         accepted = False
-        canary_rejected = False
         status = "rejected"
         credits = 0
         notices = []
@@ -1046,169 +956,118 @@ async def handle_seeder_message(node_id: str, data: dict):
             db = get_db()
             try:
                 task = db.query(Task).filter(Task.task_id == task_id).first()
-                if not task or task.status in {"completed", "failed"}:
+                if not task or task.submitter_id == "__system_canary__" or task.status in {"completed", "failed"}:
                     return
                 chunks = task.chunks or []
                 chunk = next((item for item in chunks if item["chunk_id"] == chunk_id), None)
                 if not chunk or chunk.get("assigned_to") != node_id or chunk.get("status") not in {"assigned", "running"}:
                     return
-                hidden_canary = chunk.get("hidden_canary")
-                if hidden_canary and output_hash != hidden_canary.get("expected_output_sha256"):
-                    chunk["status"] = "failed"
-                    chunk["failure_reason"] = "Hidden canary result mismatch"
-                    task.status = "failed"
-                    task.result = {"error": "Internal canary verification failed"}
-                    seeder = db.query(Seeder).filter(Seeder.node_id == node_id).first()
-                    if seeder:
-                        profile = dict(seeder.profile or {})
-                        profile["canary_failures"] = int(profile.get("canary_failures", 0)) + 1
-                        profile["canary_quarantined"] = profile["canary_failures"] >= 3
-                        seeder.profile = profile
-                        manager.seeder_info.setdefault(node_id, {}).setdefault("profile", {}).update(profile)
-                    task.chunks = chunks
-                    cleanup_ids = [item["chunk_id"] for item in chunks if item.get("swarm")]
-                    db.add(ChunkResult(task_id=task_id, chunk_id=chunk_id, seeder_id=node_id,
-                                       output_hash=output_hash, output_ref="inline", status="canary_failed"))
-                    db.commit()
-                    canary_rejected = True
-                    notices = [node_id]
-                if canary_rejected:
-                    pass
-                else:
-                    replica_results = chunk.setdefault("replica_results", [])
-                    if any(row.get("seeder_id") == node_id for row in replica_results):
-                        return
-                    replica_results.append({"output": output, "output_sha256": output_hash,
-                                            "seeder_id": node_id,
-                                            "canary_passed": bool(hidden_canary),
-                                            "canary_id": hidden_canary.get("id") if hidden_canary else None})
-                    decision = verify_replicas(replica_results, chunk.get("replicas_required", 1),
-                                               task_id=task_id, chunk_id=chunk_id,
-                                               model_sha256=chunk.get("model_sha256", ""),
-                                               prompt_sha256=chunk.get("payload_sha256", ""))
-                    if len(replica_results) < chunk.get("replicas_required", 1):
-                        chunk["status"] = "pending"
-                        chunk["assigned_to"] = None
-                        task.status = "running"
-                        status = "pending"
-                    elif decision["verified"]:
-                        chunk["status"] = "verified"
-                        chunk["output"] = decision["output"]
-                        chunk["output_sha256"] = decision["winner_hash"]
-                        task.status = "running"
-                        status = "verified"
-                        winning = [row for row in replica_results if row["output_sha256"] == decision["winner_hash"]]
-                        credits = max(1, len(decision["output"]) // 100)
-                        for row in winning:
-                            provider = db.query(Seeder).filter(Seeder.node_id == row["seeder_id"]).first()
-                            if provider:
-                                provider.credits_earned += credits
-                                provider.tasks_completed += 1
-                            db.add(CreditLedger(account_id=row["seeder_id"], entry_type="verified_work", amount=credits,
-                                                task_id=task_id, description=f"Verified inference chunk {chunk_id}"))
-                            notices.append(row["seeder_id"])
-                    else:
-                        chunk["status"] = "failed"
-                        task.status = "failed"
-                        task.result = {"error": "Replica outputs disagree; verification failed", "chunk_id": chunk_id}
-                        status = "rejected"
-                        notices = [row["seeder_id"] for row in replica_results]
-                    chunk["verification"] = {"method": "SERENE-lite + VeriLLM-inspired audit",
-                                              "canary": {"id": hidden_canary.get("id"), "passed": True} if hidden_canary else None,
-                                              **decision}
-                    task.chunks = chunks
-                    completed_chunks = sorted((c for c in chunks if c["status"] == "verified"), key=lambda c: c["index"])
-                    all_done = len(completed_chunks) == len(chunks)
-                    if all_done:
-                        task.status = "completed"
-                        task.completed_at = datetime.utcnow()
-                        task.result = {"outputs": [c["output"] for c in completed_chunks],
-                                       "text": "\n".join(c["output"] for c in completed_chunks),
-                                       "verification": "SERENE-lite replica agreement + VeriLLM-inspired transcript audit",
-                                       "chunks": [{"chunk_id": c["chunk_id"], "index": c["index"], "sha256": c["output_sha256"],
-                                                   "verification": c.get("verification")} for c in completed_chunks]}
-                    if task.status == "failed" or all_done:
-                        cleanup_ids = [c["chunk_id"] for c in chunks if c.get("swarm")]
-                    db.add(ChunkResult(task_id=task_id, chunk_id=chunk_id, seeder_id=node_id,
-                                       output_hash=output_hash, output_ref="inline", status=status))
-                    db.commit()
-                    accepted = True
-            finally:
-                db.close()
-        else:
-            task = MOCK_TASKS.get(task_id)
-            if not task or task.get("status") in {"completed", "failed"}:
-                return
-            chunk = next((item for item in task["chunks"] if item["chunk_id"] == chunk_id), None)
-            if not chunk or chunk.get("assigned_to") != node_id or chunk.get("status") not in {"assigned", "running"}:
-                return
-            hidden_canary = chunk.get("hidden_canary")
-            if hidden_canary and output_hash != hidden_canary.get("expected_output_sha256"):
-                chunk["status"] = "failed"
-                chunk["failure_reason"] = "Hidden canary result mismatch"
-                task["status"] = "failed"
-                task["result"] = {"error": "Internal canary verification failed"}
-                cleanup_ids = [item["chunk_id"] for item in task["chunks"] if item.get("swarm")]
-                profile = MOCK_SEEDERS.get(node_id, {}).get("profile", {})
-                profile["canary_failures"] = int(profile.get("canary_failures", 0)) + 1
-                profile["canary_quarantined"] = profile["canary_failures"] >= 3
-                manager.seeder_info.setdefault(node_id, {}).setdefault("profile", {}).update(profile)
-                canary_rejected = True
-                notices = [node_id]
-            else:
                 replica_results = chunk.setdefault("replica_results", [])
                 if any(row.get("seeder_id") == node_id for row in replica_results):
                     return
-                replica_results.append({"output": output, "output_sha256": output_hash, "seeder_id": node_id,
-                                        "canary_passed": bool(hidden_canary),
-                                        "canary_id": hidden_canary.get("id") if hidden_canary else None})
+                replica_results.append({"output": output, "output_sha256": output_hash,
+                                        "seeder_id": node_id})
                 decision = verify_replicas(replica_results, chunk.get("replicas_required", 1),
                                            task_id=task_id, chunk_id=chunk_id,
                                            model_sha256=chunk.get("model_sha256", ""),
                                            prompt_sha256=chunk.get("payload_sha256", ""))
                 if len(replica_results) < chunk.get("replicas_required", 1):
-                    chunk["status"], chunk["assigned_to"] = "pending", None
-                    task["status"], status = "running", "pending"
+                    chunk["status"] = "pending"
+                    chunk["assigned_to"] = None
+                    task.status = "running"
+                    status = "pending"
                 elif decision["verified"]:
-                    chunk["status"], chunk["output"], chunk["output_sha256"] = "verified", decision["output"], decision["winner_hash"]
-                    task["status"], status = "running", "verified"
+                    chunk["status"] = "verified"
+                    chunk["output"] = decision["output"]
+                    chunk["output_sha256"] = decision["winner_hash"]
+                    task.status = "running"
+                    status = "verified"
+                    winning = [row for row in replica_results if row["output_sha256"] == decision["winner_hash"]]
                     credits = max(1, len(decision["output"]) // 100)
-                    notices = [row["seeder_id"] for row in replica_results if row["output_sha256"] == decision["winner_hash"]]
-                    for provider_id in notices:
-                        if provider_id in MOCK_SEEDERS:
-                            MOCK_SEEDERS[provider_id]["tasks_completed"] += 1
-                            MOCK_SEEDERS[provider_id]["credits_earned"] += credits
-                        MOCK_CREDIT_LEDGER.append({"account_id": provider_id, "entry_type": "verified_work", "amount": credits,
-                                                   "task_id": task_id, "description": f"Verified inference chunk {chunk_id}",
-                                                   "created_at": datetime.utcnow().isoformat()})
+                    for row in winning:
+                        provider = db.query(Seeder).filter(Seeder.node_id == row["seeder_id"]).first()
+                        if provider:
+                            provider.credits_earned += credits
+                            provider.tasks_completed += 1
+                        db.add(CreditLedger(account_id=row["seeder_id"], entry_type="verified_work", amount=credits,
+                                            task_id=task_id, description=f"Verified inference chunk {chunk_id}"))
+                        notices.append(row["seeder_id"])
                 else:
-                    chunk["status"], task["status"], status = "failed", "failed", "rejected"
-                    task["result"] = {"error": "Replica outputs disagree; verification failed", "chunk_id": chunk_id}
+                    chunk["status"] = "failed"
+                    task.status = "failed"
+                    task.result = {"error": "Replica outputs disagree; verification failed", "chunk_id": chunk_id}
+                    status = "rejected"
                     notices = [row["seeder_id"] for row in replica_results]
-                chunk["verification"] = {"method": "SERENE-lite + VeriLLM-inspired audit",
-                                          "canary": {"id": hidden_canary.get("id"), "passed": True} if hidden_canary else None,
+                chunk["verification"] = {"method": "SERENE-lite replica agreement",
                                           **decision}
-                completed_chunks = sorted((c for c in task["chunks"] if c["status"] == "verified"), key=lambda c: c["index"])
-                all_done = len(completed_chunks) == len(task["chunks"])
+                task.chunks = chunks
+                completed_chunks = sorted((c for c in chunks if c["status"] == "verified"), key=lambda c: c["index"])
+                all_done = len(completed_chunks) == len(chunks)
                 if all_done:
-                    task["status"] = "completed"
-                    task["completed_at"] = datetime.utcnow().isoformat()
-                    task["result"] = {"outputs": [c["output"] for c in completed_chunks],
-                                      "text": "\n".join(c["output"] for c in completed_chunks),
-                                      "verification": "SERENE-lite replica agreement + VeriLLM-inspired transcript audit"}
-                if task["status"] == "failed" or all_done:
-                    cleanup_ids = [c["chunk_id"] for c in task["chunks"] if c.get("swarm")]
-                if node_id in MOCK_SEEDERS:
-                    MOCK_SEEDERS[node_id]["status"] = "idle"
+                    task.status = "completed"
+                    task.completed_at = datetime.utcnow()
+                    task.result = {"outputs": [c["output"] for c in completed_chunks],
+                                   "text": "\n".join(c["output"] for c in completed_chunks),
+                                   "verification": "SERENE-lite replica agreement",
+                                   "chunks": [{"chunk_id": c["chunk_id"], "index": c["index"], "sha256": c["output_sha256"],
+                                               "verification": c.get("verification")} for c in completed_chunks]}
+                if task.status == "failed" or all_done:
+                    cleanup_ids = [c["chunk_id"] for c in chunks if c.get("swarm")]
+                db.add(ChunkResult(task_id=task_id, chunk_id=chunk_id, seeder_id=node_id,
+                                   output_hash=output_hash, output_ref="inline", status=status))
+                db.commit()
                 accepted = True
-        if canary_rejected:
-            manager.seeder_info.setdefault(node_id, {})["busy"] = False
-            for cleanup_id in cleanup_ids:
-                await asyncio.to_thread(teardown_chunk_swarm, cleanup_id)
-            await manager.send_to_seeder({"type": "verdict_notice", "task_id": task_id,
-                "chunk_id": chunk_id, "verdict": "rejected", "credits_earned": 0}, node_id)
-            await allocate_pending_tasks()
-            return
+            finally:
+                db.close()
+        else:
+            task = MOCK_TASKS.get(task_id)
+            if not task or task.get("submitter_id") == "__system_canary__" or task.get("status") in {"completed", "failed"}:
+                return
+            chunk = next((item for item in task["chunks"] if item["chunk_id"] == chunk_id), None)
+            if not chunk or chunk.get("assigned_to") != node_id or chunk.get("status") not in {"assigned", "running"}:
+                return
+            replica_results = chunk.setdefault("replica_results", [])
+            if any(row.get("seeder_id") == node_id for row in replica_results):
+                return
+            replica_results.append({"output": output, "output_sha256": output_hash, "seeder_id": node_id})
+            decision = verify_replicas(replica_results, chunk.get("replicas_required", 1),
+                                       task_id=task_id, chunk_id=chunk_id,
+                                       model_sha256=chunk.get("model_sha256", ""),
+                                       prompt_sha256=chunk.get("payload_sha256", ""))
+            if len(replica_results) < chunk.get("replicas_required", 1):
+                chunk["status"], chunk["assigned_to"] = "pending", None
+                task["status"], status = "running", "pending"
+            elif decision["verified"]:
+                chunk["status"], chunk["output"], chunk["output_sha256"] = "verified", decision["output"], decision["winner_hash"]
+                task["status"], status = "running", "verified"
+                credits = max(1, len(decision["output"]) // 100)
+                notices = [row["seeder_id"] for row in replica_results if row["output_sha256"] == decision["winner_hash"]]
+                for provider_id in notices:
+                    if provider_id in MOCK_SEEDERS:
+                        MOCK_SEEDERS[provider_id]["tasks_completed"] += 1
+                        MOCK_SEEDERS[provider_id]["credits_earned"] += credits
+                    MOCK_CREDIT_LEDGER.append({"account_id": provider_id, "entry_type": "verified_work", "amount": credits,
+                                               "task_id": task_id, "description": f"Verified inference chunk {chunk_id}",
+                                               "created_at": datetime.utcnow().isoformat()})
+            else:
+                chunk["status"], task["status"], status = "failed", "failed", "rejected"
+                task["result"] = {"error": "Replica outputs disagree; verification failed", "chunk_id": chunk_id}
+                notices = [row["seeder_id"] for row in replica_results]
+            chunk["verification"] = {"method": "SERENE-lite replica agreement",
+                                      **decision}
+            completed_chunks = sorted((c for c in task["chunks"] if c["status"] == "verified"), key=lambda c: c["index"])
+            all_done = len(completed_chunks) == len(task["chunks"])
+            if all_done:
+                task["status"] = "completed"
+                task["completed_at"] = datetime.utcnow().isoformat()
+                task["result"] = {"outputs": [c["output"] for c in completed_chunks],
+                                  "text": "\n".join(c["output"] for c in completed_chunks),
+                                  "verification": "SERENE-lite replica agreement"}
+            if task["status"] == "failed" or all_done:
+                cleanup_ids = [c["chunk_id"] for c in task["chunks"] if c.get("swarm")]
+            if node_id in MOCK_SEEDERS:
+                MOCK_SEEDERS[node_id]["status"] = "idle"
+            accepted = True
         manager.seeder_info.setdefault(node_id, {})["busy"] = False
         for provider_id in set(notices or [node_id]):
             await manager.send_to_seeder({"type": "verdict_notice", "task_id": task_id,
@@ -1231,7 +1090,7 @@ async def allocate_pending_tasks():
     if DB_AVAILABLE:
         db = get_db()
         try:
-            tasks = db.query(Task).filter(Task.status.in_(["pending", "allocated", "running"])).order_by(Task.created_at).all()
+            tasks = db.query(Task).filter(Task.status.in_(["pending", "allocated", "running"]), Task.submitter_id != "__system_canary__").order_by(Task.created_at).all()
             jobs = [(task, chunk) for task in tasks for chunk in (task.chunks or []) if chunk.get("status") == "pending"]
             for task, chunk in jobs:
                 eligible = [sid for sid in idle if sid not in chunk.get("providers", [])]
@@ -1266,7 +1125,7 @@ async def allocate_pending_tasks():
         finally:
             db.close()
     else:
-        jobs = [(task, chunk) for task in MOCK_TASKS.values() if task["status"] in {"pending", "allocated", "running"}
+        jobs = [(task, chunk) for task in MOCK_TASKS.values() if task.get("submitter_id") != "__system_canary__" and task["status"] in {"pending", "allocated", "running"}
                 for chunk in task.get("chunks", []) if chunk.get("status") == "pending"]
         for task, chunk in jobs:
             eligible = [sid for sid in idle if sid not in chunk.get("providers", [])]

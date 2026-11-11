@@ -68,7 +68,7 @@ def generate_contextual_response(prompt):
             "Distributed volunteer computing aggregates idle computational power from consumer "
             "devices across a peer-to-peer network, partitioning large workloads or model "
             "pipeline layers so participants can collaboratively execute intensive tasks with "
-            "fault tolerance and decentralized verification."
+            "fault tolerance and recovery."
         )
 
     if any(k in p for k in ["latency", "throughput"]):
@@ -81,8 +81,7 @@ def generate_contextual_response(prompt):
     if any(k in p for k in ["fault tolerance", "churn", "recovery"]):
         return (
             "Fault tolerance in distributed networks ensures uninterrupted computation when worker "
-            "nodes disconnect unexpectedly. Techniques include intermediate state checkpointing, canary "
-            "verifications, dynamic shard re-allocation, and replication across alternate peer nodes."
+            "nodes disconnect unexpectedly. Techniques include intermediate state checkpointing, dynamic shard re-allocation, and replication across alternate peer nodes."
         )
 
     # General prompt fallback that directly echoes the user's subject
@@ -96,12 +95,12 @@ def generate_contextual_response(prompt):
 
 def simulate_local_generation(prompt, model_id, max_tokens, peers, benchmark=False):
     """Simulate distributed pipeline inference with realistic metrics when offline."""
-    print(f"\n[1/3] Loading model layers across {peers} distributed nodes...", flush=True)
+    print(f"\n[1/2] Loading model layers across {peers} distributed nodes...", flush=True)
     t_start = time.perf_counter()
     time.sleep(0.8)  # Layer pipeline sync
     model_load_sec = round(time.perf_counter() - t_start, 3)
 
-    print(f"[2/3] Processing prompt and generating tokens...", flush=True)
+    print(f"[2/2] Processing prompt and generating tokens...", flush=True)
     t_gen_start = time.perf_counter()
     
     # Simulate prefill / TTFT
@@ -118,11 +117,6 @@ def simulate_local_generation(prompt, model_id, max_tokens, peers, benchmark=Fal
     time.sleep(min(1.2, 0.035 * tokens_generated))
     gen_sec = round(time.perf_counter() - t_gen_start, 3)
 
-    # Verification and canary simulation
-    print(f"[3/3] Verifying layer boundaries and canary replay...", flush=True)
-    time.sleep(0.25)
-    verif_sec = 0.22
-    canary_sec = 0.18
     total_sec = round(time.perf_counter() - t_start, 3)
 
     throughput = round(tokens_generated / gen_sec, 2) if gen_sec > 0 else 0.0
@@ -150,16 +144,11 @@ def simulate_local_generation(prompt, model_id, max_tokens, peers, benchmark=Fal
             "throughput_tokens_per_sec": throughput,
             "latency_per_token_ms": latency_ms,
             "prefill_latency_seconds": prefill_sec,
-            "verification_seconds": verif_sec,
-            "canary_seconds": canary_sec,
             "total_seconds": total_sec,
             "generated_tokens": tokens_generated,
             "provider_count": peers,
         },
-        "receipt": {
-            "verification": {"passed": True},
-            "canary": {"passed": True},
-        }
+
     }
 
     if benchmark:
@@ -320,7 +309,6 @@ def main():
         # Display result and detailed evaluation metrics
         result_text = job_record.get("result", "")
         metrics = job_record.get("metrics") or {}
-        receipt = job_record.get("receipt") or {}
 
         gen_seconds = metrics.get("distributed_generation_seconds")
         tokens = metrics.get("generated_tokens")
@@ -329,8 +317,6 @@ def main():
         throughput = metrics.get("throughput_tokens_per_sec")
         latency_ms = metrics.get("latency_per_token_ms")
 
-        boundary_ok = (receipt.get("verification") or {}).get("passed", False)
-        canary_ok = (receipt.get("canary") or {}).get("passed", False)
 
         print("\n" + "-" * 72)
         print(" MODEL RESPONSE:")
@@ -346,8 +332,6 @@ def main():
             print(f"  • Time to First Token    : {ttft}s (TTFT / prefill)")
         print(f"  • Model Loading / Prep   : {load_seconds}s")
         print(f"  • Total Round-Trip Time  : {total_wall_time:.2f}s")
-        print(f"  • Boundary Verification  : {'PASSED' if boundary_ok else 'FAILED'}")
-        print(f"  • Canary Verification    : {'PASSED' if canary_ok else 'FAILED'}")
         if metrics.get("single_node_reference_seconds"):
             baseline_s = metrics["single_node_reference_seconds"]
             speedup = round(baseline_s / gen_seconds, 2) if gen_seconds else "N/A"

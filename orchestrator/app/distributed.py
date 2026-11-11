@@ -15,9 +15,9 @@ from typing import Union, Dict, Any
 from xml.etree import ElementTree
 
 CATALOG = {
-    "bigscience/bloom-560m": {"layers": 24, "hidden_size": 1024, "label": "BLOOM 560M"},
-    "bigscience/bloomz-560m": {"layers": 24, "hidden_size": 1024, "label": "BLOOMZ 560M · instructions"},
-    "TinyLlama/TinyLlama-1.1B-Chat-v1.0": {"layers": 22, "hidden_size": 2048, "label": "TinyLlama 1.1B Chat"},
+    "bigscience/bloom-560m": {"layers": 24, "hidden_size": 1024, "label": "BLOOM 560M · Base completion"},
+    "bigscience/bloomz-560m": {"layers": 24, "hidden_size": 1024, "label": "BLOOMZ 560M · Recommended Q&A"},
+    "TinyLlama/TinyLlama-1.1B-Chat-v1.0": {"layers": 22, "hidden_size": 2048, "label": "TinyLlama 1.1B Chat · High accuracy"},
 }
 PETALS_NETWORK_REVISION = 2
 
@@ -64,9 +64,12 @@ def parse_manifest(content, format="json"):
         elif not isinstance(value["benchmark"], bool):
             value["benchmark"] = False
 
-    allowed_keys = {"model_id", "revision", "prompt", "max_new_tokens", "min_peers", "max_peers", "benchmark", "layers", "hidden_size", "label"}
+    allowed_keys = {"model_id", "revision", "prompt", "max_new_tokens", "min_peers", "max_peers", "benchmark", "layers", "hidden_size", "label", "weights_bytes"}
     if not isinstance(value, dict) or set(value) - allowed_keys:
         raise ValueError(f"Allowed fields: {', '.join(sorted(allowed_keys))}")
+    wb = value.pop("weights_bytes", None)
+    if wb is not None and (isinstance(wb, bool) or not isinstance(wb, int) or wb <= 0):
+        raise ValueError("weights_bytes must be a positive integer")
     model_id = value.get("model_id")
     if not model_id:
         raise ValueError("model_id field is required")
@@ -92,7 +95,7 @@ def parse_manifest(content, format="json"):
 
 
 def resolve_revision(spec):
-    url = f"https://huggingface.co/api/models/{spec['model_id']}/revision/{spec['revision']}"
+    url = f"https://huggingface.co/api/models/{spec['model_id']}/revision/{spec['revision']}?blobs=true"
     try:
         with urllib.request.urlopen(url, timeout=30) as response:
             metadata = json.load(response)
@@ -101,7 +104,11 @@ def resolve_revision(spec):
     sha = metadata.get("sha", "")
     if not re.fullmatch(r"[a-f0-9]{40}", sha):
         raise RuntimeError("Hugging Face returned no immutable model revision")
-    return {**spec, "revision": sha, **CATALOG[spec["model_id"]]}
+    siblings = metadata.get("siblings") or []
+    st_sizes = [int(s["size"]) for s in siblings if isinstance(s, dict) and str(s.get("rfilename", "")).endswith(".safetensors") and isinstance(s.get("size"), int)]
+    bin_sizes = [int(s["size"]) for s in siblings if isinstance(s, dict) and str(s.get("rfilename", "")).endswith(".bin") and isinstance(s.get("size"), int)]
+    weights_bytes = sum(st_sizes) if st_sizes else sum(bin_sizes)
+    return {**spec, "revision": sha, **CATALOG[spec["model_id"]], "weights_bytes": weights_bytes}
 
 
 
@@ -109,7 +116,6 @@ def provider_capacity(spec, info, *, use_native=True):
     """Use the same current capability checks for initial and replacement stages."""
     profile = info.get("profile", {})
     if (info.get("busy") or info.get("state") in {"paused", "offline", "busy"}
-            or profile.get("canary_quarantined")
             or profile.get("petals_enabled") is not True or profile.get("docker_ok") is not True
             or profile.get("petals_protocol_version") != 1
             or profile.get("petals_network_revision") != PETALS_NETWORK_REVISION):
@@ -380,8 +386,42 @@ def install(app, manager):
     async def catalog():
         return [{"model_id": k, **v} for k, v in CATALOG.items()]
 
+    stale_stop_sent = {}
+    reconcile_task = None
+
+    async def reconcile_stale_sessions():
+        sender = getattr(manager, "send_to_seeder", None)
+        if not callable(sender):
+            return
+        now = time.monotonic()
+        for node, info in list(manager.seeder_info.items()):
+            if node not in manager.active_seeders:
+                continue
+            profile = info.get("profile", {})
+            petals_state = profile.get("petals") if isinstance(profile, dict) else None
+            if not isinstance(petals_state, dict):
+                continue
+            stale_job_id = petals_state.get("job_id")
+            petals_status = str(petals_state.get("status") or "").lower()
+            if not stale_job_id or stale_job_id in running or petals_status not in {"accepted", "loading", "serving"}:
+                continue
+            try:
+                known = store.get(stale_job_id)
+            except Exception:
+                known = None
+            if not known or known.get("status") not in {"completed", "failed", "cancelled"}:
+                continue
+            if now - stale_stop_sent.get((node, stale_job_id), 0.0) < 10.0:
+                continue
+            stale_stop_sent[(node, stale_job_id)] = now
+            try:
+                await sender({"type": "petals_stop", "job_id": stale_job_id}, node)
+            except Exception:
+                pass
+
     @router.get("/status")
     async def status():
+        await reconcile_stale_sessions()
         try:
             state = await asyncio.to_thread(gateway, "/health")
         except Exception:
@@ -401,8 +441,6 @@ def install(app, manager):
                 reason = "Start Docker Desktop on this provider"
             elif info.get("busy") or info.get("state") in {"paused", "busy"}:
                 reason = "Provider is busy or paused"
-            elif profile.get("canary_quarantined"):
-                reason = "Provider is quarantined after verification failures"
             elif provider_capacity(CATALOG["bigscience/bloom-560m"], info)[0] == 0:
                 reason = "No verified layer capacity; refresh RAM, memory limit, disk and GPU telemetry"
             providers.append({"node_id": node, **info, "layer_ready": reason is None, "layer_reason": reason,
@@ -490,6 +528,17 @@ def install(app, manager):
             health = await asyncio.to_thread(gateway, "/health")
             if health.get("status") != "ready" or not health.get("bootstrap"):
                 raise RuntimeError("Petals DHT gateway is not ready")
+            lan_resolver = getattr(app.state, "current_host_lan_state", None)
+            if callable(lan_resolver):
+                lan_ip = (lan_resolver() or {}).get("lan_ip")
+                if lan_ip:
+                    health = {
+                        **health,
+                        "bootstrap": [
+                            re.sub(r"^/ip4/[^/]+(?=/tcp/31331/)", f"/ip4/{lan_ip}", str(m))
+                            for m in health["bootstrap"]
+                        ],
+                    }
             peers = {n: i for n, i in manager.seeder_info.items() if n in manager.active_seeders}
             await profile_capacity(job, peers)
             peers = {n: i for n, i in manager.seeder_info.items() if n in manager.active_seeders}
@@ -497,7 +546,15 @@ def install(app, manager):
             plan = placement(job["spec"], peers, calibration=store.calibrations(), diagnostics=decision)
             job['optimizer'] = decision
             job.update(plan=plan, status="loading", prefix="ct-" + job["id"],
-                       stage_status={stage["node_id"]: {"status": "assigning"} for stage in plan})
+                       stage_status={stage["node_id"]: {"status": "assigning"} for stage in plan},
+                       metrics={
+                           "provider_count": len(plan),
+                           "max_new_tokens": int(job["spec"].get("max_new_tokens") or 32),
+                           "weights_bytes": int(job["spec"].get("weights_bytes") or 0) or None,
+                           "elapsed_seconds": 0.0,
+                           "capacity_inference_rps_total": round(sum(float((job.get("capacity_measurements", {}).get(s["node_id"]) or {}).get("inference_rps") or 0) for s in plan), 2) or None,
+                       })
+            job_wall_started = time.monotonic()
             store.save(job)
             for stage in plan:
                 manager.seeder_info[stage["node_id"]]["busy"] = True
@@ -555,19 +612,22 @@ def install(app, manager):
                             raise RuntimeError(f"Layer provider {disconnected_id} disconnected and no alternative provider is available to host layers {stage['start']}-{stage['end']}. Reconnect providers and resubmit.")
 
                     p = manager.seeder_info[stage["node_id"]].get("profile", {}).get("petals", {})
+                    lp = manager.seeder_info[stage["node_id"]].get("layer_progress")
                     if p.get("job_id") == job["id"]:
-                        job["stage_status"][stage["node_id"]] = p
-                        if p.get("error"):
-                            raise RuntimeError(f"Provider {stage['node_id']}: {p['error']}")
-                        if p.get("peer_id") and p.get("status") == "serving" and p.get("network_revision") == PETALS_NETWORK_REVISION:
-                            job["stage_status"][stage["node_id"]] = {**p, "status": "serving"}
-                            transport = p.get("transport", "direct")
-                            ready.append({**stage, "peer_id": p["peer_id"], "transport": transport})
+                        merged_p = {**p, **({"progress": lp} if isinstance(lp, dict) and lp and "progress" not in p else {})}
+                        job["stage_status"][stage["node_id"]] = merged_p
+                        if merged_p.get("error"):
+                            raise RuntimeError(f"Provider {stage['node_id']}: {merged_p['error']}")
+                        if merged_p.get("peer_id") and merged_p.get("status") == "serving" and merged_p.get("network_revision") == PETALS_NETWORK_REVISION:
+                            job["stage_status"][stage["node_id"]] = {**merged_p, "status": "serving"}
+                            transport = merged_p.get("transport", "direct")
+                            ready.append({**stage, "peer_id": merged_p["peer_id"], "transport": transport})
 
                 if reassigned:
                     await asyncio.sleep(1)
                     continue
 
+                job.setdefault("metrics", {})["elapsed_seconds"] = round(time.monotonic() - job_wall_started, 1)
                 if len(ready) == len(plan):
                     decision = job.get('optimizer', {})
                     for stage in ready:
@@ -605,23 +665,64 @@ def install(app, manager):
                                        + ". Session state cannot migrate safely; resubmit to restart.")
                 response = await asyncio.to_thread(gateway, "/jobs/" + job["id"])
                 if response["status"] in {"completed", "failed"}:
+                    prev_metrics = {k: v for k, v in (job.get("metrics") or {}).items() if k in {"capacity_inference_rps_total", "weights_bytes"}}
                     job.update(response)
+                    if isinstance(job.get("metrics"), dict) and prev_metrics:
+                        job["metrics"] = {**prev_metrics, **job["metrics"]}
+                    if response["status"] == "completed":
+                        job.pop("partial_result", None)
+                    for st in job.get("plan") or []:
+                        nid = st["node_id"]
+                        cur_p = manager.seeder_info.get(nid, {}).get("profile", {}).get("petals", {})
+                        cur_lp = manager.seeder_info.get(nid, {}).get("layer_progress")
+                        if cur_p.get("job_id") == job["id"]:
+                            job.setdefault("stage_status", {})[nid] = {**cur_p, **({"progress": cur_lp} if isinstance(cur_lp, dict) and cur_lp and "progress" not in cur_p else {})}
+                    if isinstance(response.get("gateway_log_tail"), list):
+                        job["gateway_log_tail"] = response["gateway_log_tail"]
                     from sun_runtime import record_calibration
                     try:
                         store.save_calibrations(record_calibration(job,
                             {n:i for n,i in manager.seeder_info.items() if n in manager.active_seeders}, native_capacity, previous_records=store.calibrations()))
                     except Exception as calibration_error:
-                        # Optional performance telemetry cannot turn a verified
+                        # Optional performance telemetry cannot turn a completed
                         # completed inference into a failed inference.
                         job.setdefault('optimizer', {})['calibration_error'] = str(calibration_error)[:300]
                     break
                 job["status"] = response["status"]
                 job["progress"] = response.get("progress", 0)
-                job["stage_status"] = {**job.get("stage_status", {}), "coordinator": {"status": response.get("status", "running")}}
+                if response.get("partial_result") is not None:
+                    job["partial_result"] = response["partial_result"]
+                if isinstance(response.get("gateway_log_tail"), list):
+                    job["gateway_log_tail"] = response["gateway_log_tail"]
+                live_metrics = {
+                    key: response[key]
+                    for key in (
+                        "downloaded_bytes", "total_bytes", "percent", "speed_bps",
+                        "generated_tokens", "max_new_tokens", "model_load_seconds",
+                        "distributed_generation_seconds", "throughput_tokens_per_sec",
+                        "latency_per_token_ms", "prefill_latency_seconds",
+                        "token_confidence_pct", "perplexity", "finite_logits_pct",
+                    )
+                    if key in response and response[key] is not None
+                }
+                live_metrics["elapsed_seconds"] = round(time.monotonic() - job_wall_started, 1)
+                job.setdefault("metrics", {}).update(live_metrics)
+                stage_map = {**job.get("stage_status", {})}
+                for st in job.get("plan") or []:
+                    nid = st["node_id"]
+                    cur_p = manager.seeder_info.get(nid, {}).get("profile", {}).get("petals", {})
+                    cur_lp = manager.seeder_info.get(nid, {}).get("layer_progress")
+                    if cur_p.get("job_id") == job["id"]:
+                        stage_map[nid] = {**cur_p, **({"progress": cur_lp} if isinstance(cur_lp, dict) and cur_lp and "progress" not in cur_p else {})}
+                stage_map["coordinator"] = {
+                    "status": response.get("status", "running"),
+                    **{k: response[k] for k in ("downloaded_bytes", "total_bytes", "percent", "speed_bps", "elapsed_seconds", "generated_tokens", "max_new_tokens") if k in response},
+                }
+                job["stage_status"] = stage_map
                 store.save(job)
                 await asyncio.sleep(2)
             else:
-                raise RuntimeError("Model download, verification, or inference exceeded 60 minutes. Check the coordinator Hugging Face cache and gateway log, then retry after the checkpoint has downloaded.")
+                raise RuntimeError("Model download or inference exceeded 60 minutes. Check the coordinator Hugging Face cache and gateway log, then retry after the checkpoint has downloaded.")
         except asyncio.CancelledError:
             job.update(status="cancelled", error="Stopped by operator")
         except Exception as exc:
@@ -650,6 +751,7 @@ def install(app, manager):
 
     @router.post("/jobs", status_code=202)
     async def submit(upload: Upload):
+        await reconcile_stale_sessions()
         if running:
             raise HTTPException(409, "One distributed job at a time is supported by this small-model workspace")
         try:
@@ -675,8 +777,24 @@ def install(app, manager):
             running[id].cancel()
         return {"id": id, "status": "cancelling" if id in running else job["status"]}
 
+    @app.on_event("startup")
+    async def startup_reconciler():
+        nonlocal reconcile_task
+
+        async def _reconcile_loop():
+            while True:
+                try:
+                    await reconcile_stale_sessions()
+                except Exception:
+                    pass
+                await asyncio.sleep(5)
+
+        reconcile_task = asyncio.create_task(_reconcile_loop())
+
     @app.on_event("shutdown")
     async def shutdown():
+        if reconcile_task is not None:
+            reconcile_task.cancel()
         tasks = list(running.values())
         for task in tasks:
             task.cancel()

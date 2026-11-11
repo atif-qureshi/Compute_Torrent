@@ -32,7 +32,6 @@ class CapacityTests(unittest.TestCase):
         stage = dict(node_id="lost", start=12, end=24, device="cuda")
         good = profile()
         peers = {"paused": dict(state="paused", profile=good),
-                 "quarantined": dict(profile={**good, "canary_quarantined": True}),
                  "old": dict(profile={**good, "petals_protocol_version": 0}),
                  "small": dict(profile={**good, "free_ram_gb": 0.5}),
                  "assigned": dict(profile=good), "cpu-spare": dict(profile=good)}

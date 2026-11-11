@@ -15,6 +15,11 @@ if ($LASTEXITCODE -ne 0) {
     throw 'Docker Desktop is not running or this account cannot access its engine.'
 }
 
+$syncScript = Join-Path $PSScriptRoot 'sync-host-ip.ps1'
+if (Test-Path -LiteralPath $syncScript) {
+    & $syncScript -RootDir $PSScriptRoot
+}
+
 $composeArgs = @('compose', '-f', 'docker-compose.local.yml')
 if ($WithPetals) { $composeArgs += @('--profile', 'petals') }
 $composeArgs += 'up'

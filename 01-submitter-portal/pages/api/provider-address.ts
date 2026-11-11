@@ -10,7 +10,7 @@ export default async function providerAddress(req: NextApiRequest, res: NextApiR
   if (!hasValidSession(req)) return res.status(401).json({ detail: 'Sign in required' })
 
   const configuredHost = (process.env.COMPUTETORRENT_PROVIDER_LAN_HOST || '192.168.100.7').trim()
-  const lanAddress = `ws://${configuredHost}:8001/ws/seeder`
+  let lanAddress = `ws://${configuredHost}:8001/ws/seeder`
   let publicAddress: string | null = null
   let enrollmentToken: string | null = null
 
@@ -52,7 +52,78 @@ export default async function providerAddress(req: NextApiRequest, res: NextApiR
     // Ignore
   }
 
+  let resolvedLanHost = configuredHost
+  let resolvedLanInterface: string | null = null
+  let resolvedLanSource = 'env'
+  let resolvedUpdatedAt = -1
+  const isLanIpv4 = (host: unknown): host is string =>
+    typeof host === 'string' &&
+    /^\d{1,3}(?:\.\d{1,3}){3}$/.test(host.trim()) &&
+    !host.trim().startsWith('127.') &&
+    !host.trim().startsWith('169.254.') &&
+    host.trim() !== '0.0.0.0'
+
+  try {
+    const fs = await import('fs')
+    const path = await import('path')
+    const candidates = [
+      path.join(process.cwd(), 'runtime', 'swarm', 'host-network.json'),
+      path.resolve(process.cwd(), '..', 'runtime', 'swarm', 'host-network.json'),
+    ]
+    for (const file of candidates) {
+      if (!fs.existsSync(file)) continue
+      const raw = JSON.parse(fs.readFileSync(file, 'utf-8').replace(/^\uFEFF/, ''))
+      if (isLanIpv4(raw?.lan_ip)) {
+        const ts = Number(raw?.updated_at || 0)
+        if (ts >= resolvedUpdatedAt) {
+          resolvedLanHost = raw.lan_ip.trim()
+          resolvedLanInterface = typeof raw?.interface === 'string' ? raw.interface : null
+          resolvedLanSource = typeof raw?.source === 'string' ? raw.source : 'host-sync'
+          resolvedUpdatedAt = ts
+        }
+      }
+      break
+    }
+  } catch {
+    // Ignore optional runtime network cache read errors
+  }
+
+  try {
+    const apiBase = process.env.COMPUTETORRENT_ORCHESTRATOR_API_URL || 'http://orchestrator:8001/api'
+    const token = process.env.COMPUTETORRENT_API_TOKEN
+    if (token) {
+      const upstream = await fetch(`${apiBase.replace(/\/$/, '')}/network`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (upstream.ok) {
+        const net = await upstream.json()
+        const ts = Number(net?.lan_updated_at || 0)
+        if (isLanIpv4(net?.lan_host) && ts >= resolvedUpdatedAt) {
+          resolvedLanHost = net.lan_host.trim()
+          resolvedLanInterface = typeof net?.lan_interface === 'string' ? net.lan_interface : resolvedLanInterface
+          resolvedLanSource = typeof net?.lan_ip_source === 'string' ? net.lan_ip_source : 'coordinator'
+          resolvedUpdatedAt = ts
+        }
+      }
+    }
+  } catch {
+    // Fallback to host-sync or request host
+  }
+
+  if (resolvedUpdatedAt <= 0 && req.headers.host) {
+    const reqHost = req.headers.host.split(':')[0]?.trim() || ''
+    if (isLanIpv4(reqHost)) {
+      resolvedLanHost = reqHost
+      resolvedLanSource = 'request-host'
+    }
+  }
+
+  lanAddress = `ws://${resolvedLanHost}:8001/ws/seeder`
+  res.setHeader('Cache-Control', 'no-store')
   return res.status(200).json({
+    lan_ip: resolvedLanHost,
+    lan_interface: resolvedLanInterface,
+    lan_ip_source: resolvedLanSource,
     address: publicAddress || lanAddress,
     lan_address: lanAddress,
     public_address: publicAddress,

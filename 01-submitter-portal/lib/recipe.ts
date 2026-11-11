@@ -1,8 +1,8 @@
 export type Recipe = {model_id:string;revision:string;prompt:string;max_new_tokens:number;min_peers:number;max_peers:number;benchmark:boolean}
-export const initialRecipe:Recipe={model_id:'',revision:'main',prompt:'Explain volunteer computing in one sentence.',max_new_tokens:32,min_peers:2,max_peers:4,benchmark:false}
+export const initialRecipe:Recipe={model_id:'',revision:'main',prompt:'',max_new_tokens:32,min_peers:2,max_peers:4,benchmark:true}
 export function validateRecipe(value:any,catalog:any[]):Recipe {
  if(!value||typeof value!=='object'||Array.isArray(value))throw new Error('The recipe must be an object with named fields.')
- const allowed=['model_id','revision','prompt','max_new_tokens','min_peers','max_peers','benchmark','layers','hidden_size','label']
+ const allowed=['model_id','revision','prompt','max_new_tokens','min_peers','max_peers','benchmark','layers','hidden_size','label','weights_bytes']
  if(Object.keys(value).some(k=>!allowed.includes(k)))throw new Error('The recipe contains unsupported fields. Use the downloadable example.')
  const r={...initialRecipe,min_peers:1,max_peers:8,...value}
  if(!catalog.some(m=>m.model_id===r.model_id))throw new Error('Select a model supported by the current coordinator catalog.')

@@ -201,7 +201,7 @@ async def main():
             production = await asyncio.wait_for(asyncio.to_thread(execute, job,
                 lambda status: print("CT_JOB " + status, flush=True)), 120)
             assert production["status"] == "completed", production
-            assert production["receipt"]["canary"]["passed"], production
+            assert isinstance(production["result"], str) and "receipt" not in production, production
             timings = production['metrics'].get('stage_rpc_timings',[])
             assert timings and all(row['seconds'] > 0 for row in timings), 'Missing actual stage timing data'
             assert {row['node_id'] for row in timings} == set(route_nodes)
@@ -212,7 +212,7 @@ async def main():
                 layers=layer_count, optimizer_fixture=sun_fixture, ranges=ranges, rpc_samples=len(timings),
                 planner_link_inputs="controlled fixture" if sun_fixture else "not used", tokens=tokens, post_startup_payload_bytes=after-before,
                 checkpoint="random tiny " + architecture, production_pipeline=production["status"],
-                canary=production["receipt"]["canary"]["passed"], real_cgnat=False)), flush=True)
+                real_cgnat=False)), flush=True)
 
 
 if __name__ == "__main__":

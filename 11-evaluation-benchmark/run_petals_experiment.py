@@ -81,7 +81,7 @@ def main():
             lat_ms = metrics.get("latency_per_token_ms") or (round((gen_sec / tokens) * 1000, 1) if gen_sec and tokens else "n/a")
             print(f"  revision {revision[:12]}, generation {gen_sec}s ({throughput} tok/s, {lat_ms} ms/tok), "
                   f"single-node CPU {metrics.get('single_node_reference_seconds')}s, "
-                  f"boundary/canary passed", flush=True)
+                  f"generation completed", flush=True)
     print("Export measured CSV and group summaries with export_petals_runs.py.")
 
 

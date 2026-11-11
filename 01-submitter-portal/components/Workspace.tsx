@@ -34,7 +34,7 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     alive.current = true
     let timer: ReturnType<typeof setTimeout>
-    const poll = async () => { await refresh(); if (alive.current) timer = setTimeout(poll, document.hidden ? 30000 : 6000) }
+    const poll = async () => { await refresh(); if (alive.current) timer = setTimeout(poll, document.hidden ? 30000 : 3000) }
     void poll()
     const focus = () => { if (!document.hidden) void refresh() }
     document.addEventListener('visibilitychange', focus)

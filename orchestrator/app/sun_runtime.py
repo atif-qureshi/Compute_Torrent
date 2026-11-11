@@ -100,7 +100,7 @@ def sun_plan(spec, peers, capacity_fn, native_fn, calibration, now=None, baselin
 
 
 def record_calibration(job,peers,native_fn,now=None,previous_records=None):
-    """Learn only from successfully verified, coordinator-timed model runs.
+    """Learn only from completed, coordinator-timed model runs.
 
     A nonnegative residual is an estimate, not an independent network ping.
     Contradictory compute/RPC measurements are retained as non-routable evidence,
@@ -108,9 +108,6 @@ def record_calibration(job,peers,native_fn,now=None,previous_records=None):
     """
     now=time.time() if now is None else now
     if job.get('status')!='completed':
-        return {}
-    receipt=job.get('receipt',{})
-    if receipt.get('verification',{}).get('passed') is not True or receipt.get('canary',{}).get('passed') is not True:
         return {}
     samples=job.get('metrics',{}).get('stage_rpc_timings',[])
     results={}

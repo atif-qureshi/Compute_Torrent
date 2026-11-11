@@ -67,7 +67,9 @@ class PetalsControl:
         self.phase = "idle"
         self.failure_status = None
         self.assignment = {}
+        self._dl_probe = {}
         self.capacity_job_id = None
+        self._dl_probe = {}
 
     def _validated_image_id(self, device):
         expected = runtime_digest(device)
@@ -323,6 +325,66 @@ class PetalsControl:
                 result.update(status="failed", error="Petals layer container stopped: " + last[-1200:])
         except Exception as exc:
             result.update(status="failed", error=result.get("error") or str(exc)[:1000])
+            return result
+        log_tail = []
+        layer_log_file = folder / "layer.log"
+        if layer_log_file.is_file():
+            try:
+                log_tail = [ln[-260:] for ln in layer_log_file.read_text(errors="replace").splitlines() if ln.strip()][-35:]
+            except OSError:
+                log_tail = []
+        status_name = result.get("status")
+        if status_name in {"loading", "starting"}:
+            weights_bytes = 0
+            model_id = None
+            req_file = folder / "request.json"
+            if req_file.is_file():
+                try:
+                    req_data = json.loads(req_file.read_text(encoding="utf-8"))
+                    spec = req_data.get("spec") or {}
+                    model_id = spec.get("model_id")
+                    weights_bytes = int(spec.get("weights_bytes") or 0)
+                except Exception:
+                    pass
+            probe = self._dl_probe if isinstance(getattr(self, "_dl_probe", None), dict) and self._dl_probe.get("job_id") == self.job_id else {"job_id": self.job_id, "ts": 0.0, "bytes": 0, "speed_bps": 0}
+            now_mono = time.monotonic()
+            if model_id and self.container and now_mono - probe.get("ts", 0.0) >= 6.0:
+                slug = "models--" + str(model_id).replace("/", "--")
+                py_probe = (
+                    "import pathlib; "
+                    f"s={slug!r}; "
+                    "print(sum(f.stat().st_size for r in ('/cache/petals','/cache/huggingface/hub') "
+                    "for d in [pathlib.Path(r)/s/'blobs'] if d.is_dir() "
+                    "for f in d.iterdir() if f.is_file()))"
+                )
+                try:
+                    out = command(["docker", "exec", self.container, "python", "-c", py_probe], timeout=4)
+                    new_bytes = int((out or "0").strip().splitlines()[-1])
+                    dt = max(now_mono - probe["ts"], 1.0) if probe.get("ts") else 0.0
+                    speed_bps = max(0, int((new_bytes - probe.get("bytes", 0)) / dt)) if dt > 0 and probe.get("ts") else 0
+                    probe = {"job_id": self.job_id, "ts": now_mono, "bytes": new_bytes, "speed_bps": speed_bps}
+                    self._dl_probe = probe
+                except Exception:
+                    probe["ts"] = now_mono
+                    self._dl_probe = probe
+            dl_bytes = int(probe.get("bytes") or 0)
+            pct = min(99, max(1, int(dl_bytes * 100 / weights_bytes))) if weights_bytes > 0 and dl_bytes > 0 else (0 if weights_bytes > 0 else None)
+            result["progress"] = {
+                "phase": status_name,
+                "downloaded_bytes": dl_bytes,
+                "total_bytes": weights_bytes or None,
+                "percent": pct,
+                "speed_bps": int(probe.get("speed_bps") or 0),
+                "log_tail": log_tail,
+                "updated_at": int(time.time()),
+            }
+        elif log_tail:
+            result["progress"] = {
+                "phase": status_name,
+                "percent": 100 if status_name == "serving" else None,
+                "log_tail": log_tail,
+                "updated_at": int(time.time()),
+            }
         return result
 
     def stop(self, job_id=None):
@@ -343,3 +405,4 @@ class PetalsControl:
         self.phase = "idle"
         self.failure_status = None
         self.assignment = {}
+        self._dl_probe = {}

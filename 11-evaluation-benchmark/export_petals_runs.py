@@ -11,9 +11,8 @@ FIELDS = [
     "job_id", "model_id", "revision", "status", "created_at", "provider_count",
     "generated_tokens", "model_load_seconds", "distributed_generation_seconds",
     "throughput_tokens_per_sec", "latency_per_token_ms",
-    "verification_seconds", "canary_seconds", "total_seconds",
+    "total_seconds",
     "single_node_reference_seconds", "single_node_reference_tokens", "speedup",
-    "boundary_passed", "canary_passed",
 ]
 
 
@@ -25,7 +24,6 @@ def collect(database):
     rows = []
     for job in bodies:
         metrics = job.get("metrics") or {}
-        receipt = job.get("receipt") or {}
         spec = job.get("spec") or {}
         distributed = metrics.get("distributed_generation_seconds")
         baseline = metrics.get("single_node_reference_seconds")
@@ -57,14 +55,10 @@ def collect(database):
             "distributed_generation_seconds": distributed or "",
             "throughput_tokens_per_sec": throughput if throughput is not None else "",
             "latency_per_token_ms": latency_ms if latency_ms is not None else "",
-            "verification_seconds": metrics.get("verification_seconds", ""),
-            "canary_seconds": metrics.get("canary_seconds", ""),
             "total_seconds": metrics.get("total_seconds", ""),
             "single_node_reference_seconds": baseline or "",
             "single_node_reference_tokens": metrics.get("single_node_reference_tokens", ""),
             "speedup": speedup,
-            "boundary_passed": (receipt.get("verification") or {}).get("passed", ""),
-            "canary_passed": (receipt.get("canary") or {}).get("passed", ""),
         })
     return rows
 

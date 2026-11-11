@@ -1,11 +1,11 @@
-export const ACTIVE = new Set(['queued', 'resolving', 'profiling_capacity', 'loading', 'downloading_model', 'loading_reference', 'connecting_layers', 'running', 'verifying', 'canary', 'benchmarking'])
+export const ACTIVE = new Set(['queued', 'resolving', 'profiling_capacity', 'loading', 'downloading_model', 'connecting_layers', 'running', 'benchmarking'])
 export const isActive = (status?: string) => ACTIVE.has(status || '')
 export const statusLabel = (status?: string) => ({
   healthy: 'Healthy', ready: 'Ready', online: 'Connected', idle: 'Available', busy: 'Working',
   offline: 'Disconnected', revoked: 'Revoked', paused: 'Paused', queued: 'Queued',
   resolving: 'Resolving model', profiling_capacity: 'Measuring capacity', loading: 'Preparing layers',
-  downloading_model: 'Preparing model', loading_reference: 'Finalizing runtime', connecting_layers: 'Connecting layers',
-  running: 'Generating', serving: 'Serving layers', verifying: 'Finalizing', canary: 'Finalizing',
+  downloading_model: 'Preparing model', connecting_layers: 'Connecting layers',
+  running: 'Generating', serving: 'Serving layers',
   benchmarking: 'Measuring performance', completed: 'Completed', failed: 'Failed', cancelled: 'Cancelled',
   stopped: 'Stopped', sent: 'Starting runtime', assigning: 'Assigning layers', unavailable: 'Unavailable',
 } as Record<string, string>)[status || ''] || (status ? status.replace(/_/g, ' ') : 'Unknown')

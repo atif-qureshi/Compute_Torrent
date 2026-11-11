@@ -58,12 +58,11 @@ export function diagnoseError(rawError: string): Diagnosis {
 
   if (err.includes('422') || err.includes('unprocessable entity') || err.includes('schema')) {
     return {
-      title: 'Invalid Model Recipe / Configuration Schema',
+      title: 'Invalid Model Configuration Schema',
       summary: 'The submitted model configuration contains invalid fields or an unsupported model identifier.',
       recommendations: [
-        'Select a verified model from the catalog: `TinyLlama/TinyLlama-1.1B-Chat-v1.0` or `bigscience/bloomz-560m`.',
-        'Verify parameters: `max_new_tokens` must be a positive integer, `prompt` cannot be empty.',
-        'Switch to Guided Mode to ensure inputs are formatted correctly.',
+        'Select a verified model from the catalog: `bigscience/bloomz-560m`, `TinyLlama/TinyLlama-1.1B-Chat-v1.0`, or `bigscience/bloom-560m`.',
+        'Verify parameters: `max_new_tokens` must be an integer between 1 and 128, `prompt` cannot be empty.',
       ],
       severity: 'warning',
     }
